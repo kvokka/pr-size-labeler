@@ -39,7 +39,7 @@ func TestLoadEnvNormalizesPrivateKeyFormats(t *testing.T) {
 			if strings.Contains(env.PrivateKeyPEM, `\n`) {
 				t.Fatalf("normalized key still contains escaped newline: %q", env.PrivateKeyPEM)
 			}
-			if _, err := auth.NewAppTokenProvider(env.AppID, env.PrivateKeyPEM, "https://api.github.com/"); err != nil {
+			if _, err := auth.NewAppTokenProvider(env.AppID, env.PrivateKeyPEM, "https://api.github.com/", nil); err != nil {
 				t.Fatalf("NewAppTokenProvider returned error after normalization: %v", err)
 			}
 		})

@@ -94,6 +94,12 @@ Enable webhooks.
 
 Set this to the public HTTPS URL where `pr-size-labeler` receives GitHub webhooks.
 
+For the default public deployment of this repository, use:
+
+```text
+https://kvokka-pr-size-labeler.hf.space/
+```
+
 Examples:
 
 ```text

@@ -94,8 +94,55 @@ func TestPullRequestOpenedAppliesSingleSizeLabel(t *testing.T) {
 	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/labels", `{"color":"55A84B","name":"size/S"}`)
 	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/issues/7/labels", `{"labels":["size/S"]}`)
 	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/issues/7/comments", `{"body":"small enough"}`)
+	for _, want := range []string{
+		`pull_request stage=start action="opened" installation_id=42 repo=acme/widgets pr_number=7 accepted pull_request event`,
+		`pull_request stage=token action="opened" installation_id=42 repo=acme/widgets pr_number=7 requesting installation token`,
+		`pull_request stage=files action="opened" installation_id=42 repo=acme/widgets pr_number=7 fetched 2 pull request files`,
+		`pull_request stage=selection action="opened" installation_id=42 repo=acme/widgets pr_number=7 effective_total=24 selected_label=size/S`,
+		`pull_request stage=done action="opened" installation_id=42 repo=acme/widgets pr_number=7 completed pull request processing with label size/S`,
+	} {
+		assertLogContains(t, logs.String(), want)
+	}
 	assertLogContains(t, logs.String(), `source="203.0.113.10"`)
 	assertLogContains(t, logs.String(), `event="pull_request"`)
+}
+
+func TestPullRequestLogsFailingStage(t *testing.T) {
+	handler := NewHandler(
+		"secret",
+		auth.StaticTokenProvider("test-token"),
+		func(token string) *githubapi.Client {
+			return githubapi.NewClient("http://127.0.0.1:1/", token, &http.Client{})
+		},
+	)
+	var logs bytes.Buffer
+	handler.logger = log.New(&logs, "", 0)
+
+	payload := map[string]any{
+		"action":       "opened",
+		"installation": map[string]any{"id": 42},
+		"repository":   map[string]any{"name": "widgets", "owner": map[string]any{"login": "acme"}},
+		"pull_request": map[string]any{
+			"number":    7,
+			"additions": 10,
+			"deletions": 1,
+			"labels":    []map[string]any{},
+			"base":      map[string]any{"ref": "main"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", signPayload("secret", body))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadGateway {
+		t.Fatalf("ServeHTTP status = %d, want 502; body=%s", resp.Code, resp.Body.String())
+	}
+	assertLogContains(t, logs.String(), `pull_request stage=files action="opened" installation_id=42 repo=acme/widgets pr_number=7 fetching pull request files`)
+	assertLogContains(t, logs.String(), `pull_request stage=files action="opened" installation_id=42 repo=acme/widgets pr_number=7 error=`)
 }
 
 func TestInvalidSignatureRejected(t *testing.T) {
@@ -131,6 +178,45 @@ func TestInvalidSignatureRejected(t *testing.T) {
 		t.Fatal("unexpected outbound GitHub call for invalid signature")
 	}
 	assertLogContains(t, logs.String(), `source="198.51.100.25"`)
+}
+
+func TestPingReturnsOKWithoutGitHubAPIRequests(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	handler := NewHandler(
+		"secret",
+		auth.StaticTokenProvider("test-token"),
+		func(token string) *githubapi.Client {
+			return githubapi.NewClient(server.URL+"/", token, server.Client())
+		},
+	)
+	var logs bytes.Buffer
+	handler.logger = log.New(&logs, "", 0)
+
+	body := []byte(`{"zen":"Favor focus over features."}`)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.RemoteAddr = "198.51.100.25:1234"
+	req.Header.Set("X-GitHub-Event", "ping")
+	req.Header.Set("X-Hub-Signature-256", signPayload("secret", body))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("ServeHTTP status = %d, want 200", resp.Code)
+	}
+	if strings.TrimSpace(resp.Body.String()) != `{"status":"ok","event":"ping"}` {
+		t.Fatalf("ServeHTTP body = %q, want ping ack JSON", resp.Body.String())
+	}
+	if called {
+		t.Fatal("unexpected outbound GitHub call for ping event")
+	}
+	assertLogContains(t, logs.String(), `event="ping"`)
 }
 
 func TestRequestSourcePrefersForwardedHeaders(t *testing.T) {

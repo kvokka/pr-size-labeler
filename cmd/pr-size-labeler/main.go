@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"pr-size-labeler/internal/auth"
 	"pr-size-labeler/internal/config"
@@ -19,8 +20,9 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("startup config app_id=%d listen_addr=%s github_api_base_url=%s %s", env.AppID, env.ListenAddr, env.GitHubAPIBaseURL, privateKeyDiagnosticSummary(env.PrivateKeyPEM))
+	outboundClient := &http.Client{Timeout: 30 * time.Second}
 
-	tokenProvider, err := auth.NewAppTokenProvider(env.AppID, env.PrivateKeyPEM, env.GitHubAPIBaseURL)
+	tokenProvider, err := auth.NewAppTokenProvider(env.AppID, env.PrivateKeyPEM, env.GitHubAPIBaseURL, outboundClient)
 	if err != nil {
 		log.Printf("token provider initialization failed: %v; %s", err, privateKeyDiagnosticSummary(env.PrivateKeyPEM))
 		log.Fatal(err)
@@ -30,7 +32,7 @@ func main() {
 		env.WebhookSecret,
 		tokenProvider,
 		func(token string) *githubapi.Client {
-			return githubapi.NewClient(env.GitHubAPIBaseURL, token, http.DefaultClient)
+			return githubapi.NewClient(env.GitHubAPIBaseURL, token, outboundClient)
 		},
 	)
 

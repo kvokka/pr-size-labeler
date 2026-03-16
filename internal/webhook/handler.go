@@ -70,6 +70,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
+	if r.Header.Get("X-GitHub-Event") == "ping" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","event":"ping"}`))
+		return
+	}
 	if r.Header.Get("X-GitHub-Event") != "pull_request" {
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -102,34 +108,48 @@ func allowedAction(action string) bool {
 }
 
 func (h *Handler) handlePullRequest(ctx context.Context, event pullRequestEvent) error {
+	h.logPullRequestStage(event, "start", "accepted pull_request event")
+	h.logPullRequestStage(event, "token", "requesting installation token")
 	token, err := h.tokenProvider.Token(ctx, event.Installation.ID)
 	if err != nil {
+		h.logPullRequestFailure(event, "token", err)
 		return fmt.Errorf("create installation token: %w", err)
 	}
+	h.logPullRequestStage(event, "token", "installation token acquired")
 	client := h.newClient(token)
 	owner := event.Repository.Owner.Login
 	repo := event.Repository.Name
 	ref := event.PullRequest.Base.Ref
 
+	h.logPullRequestStage(event, "files", "fetching pull request files")
 	files, err := client.ListPullRequestFiles(ctx, owner, repo, event.PullRequest.Number)
 	if err != nil {
+		h.logPullRequestFailure(event, "files", err)
 		return err
 	}
+	h.logPullRequestStage(event, "files", fmt.Sprintf("fetched %d pull request files", len(files)))
 
+	h.logPullRequestStage(event, "gitattributes", "loading .gitattributes from base branch")
 	gitattributesContent, err := client.GetRepositoryContent(ctx, owner, repo, ".gitattributes", ref)
 	if err != nil && err != githubapi.ErrNotFound {
+		h.logPullRequestFailure(event, "gitattributes", err)
 		return err
 	}
 	patterns := generated.ParseGitattributes(gitattributesContent)
+	h.logPullRequestStage(event, "gitattributes", fmt.Sprintf("loaded %d generated-file pattern(s)", len(patterns)))
 
+	h.logPullRequestStage(event, "labels_config", "loading .github/labels.yml from base branch")
 	labelsContent, err := client.GetRepositoryContent(ctx, owner, repo, ".github/labels.yml", ref)
 	if err != nil && err != githubapi.ErrNotFound {
+		h.logPullRequestFailure(event, "labels_config", err)
 		return err
 	}
 	labelSet, err := config.LoadLabelSet(labelsContent)
 	if err != nil {
+		h.logPullRequestFailure(event, "labels_config", err)
 		return err
 	}
+	h.logPullRequestStage(event, "labels_config", fmt.Sprintf("loaded %d label definition(s)", len(labelSet)))
 
 	effectiveTotal := event.PullRequest.Additions + event.PullRequest.Deletions
 	for _, file := range files {
@@ -142,20 +162,30 @@ func (h *Handler) handlePullRequest(ctx context.Context, event pullRequestEvent)
 	}
 
 	selected := labelSet.Select(effectiveTotal)
+	h.logPullRequestStage(event, "selection", fmt.Sprintf("effective_total=%d selected_label=%s", effectiveTotal, selected.Name))
+	h.logPullRequestStage(event, "labels_cleanup", "removing previously configured size labels")
 	if err := h.removeExistingLabels(ctx, client, owner, repo, event, labelSet, selected.Name); err != nil {
+		h.logPullRequestFailure(event, "labels_cleanup", err)
 		return err
 	}
+	h.logPullRequestStage(event, "label_ensure", fmt.Sprintf("ensuring label %s exists", selected.Name))
 	if err := h.ensureLabelExists(ctx, client, owner, repo, selected); err != nil {
+		h.logPullRequestFailure(event, "label_ensure", err)
 		return err
 	}
+	h.logPullRequestStage(event, "label_apply", fmt.Sprintf("applying label %s", selected.Name))
 	if err := client.AddIssueLabels(ctx, owner, repo, event.PullRequest.Number, []string{selected.Name}); err != nil {
+		h.logPullRequestFailure(event, "label_apply", err)
 		return err
 	}
 	if strings.TrimSpace(selected.Comment) != "" {
+		h.logPullRequestStage(event, "comment", "ensuring configured comment")
 		if err := h.ensureComment(ctx, client, owner, repo, event.PullRequest.Number, selected.Comment); err != nil {
+			h.logPullRequestFailure(event, "comment", err)
 			return err
 		}
 	}
+	h.logPullRequestStage(event, "done", fmt.Sprintf("completed pull request processing with label %s", selected.Name))
 	return nil
 }
 
@@ -227,6 +257,38 @@ func (h *Handler) logRequest(r *http.Request) {
 		r.Header.Get("X-Forwarded-For"),
 		r.Header.Get("X-Real-IP"),
 		r.UserAgent(),
+	)
+}
+
+func (h *Handler) logPullRequestStage(event pullRequestEvent, stage, message string) {
+	if h.logger == nil {
+		return
+	}
+	h.logger.Printf(
+		"pull_request stage=%s action=%q installation_id=%d repo=%s/%s pr_number=%d %s",
+		stage,
+		event.Action,
+		event.Installation.ID,
+		event.Repository.Owner.Login,
+		event.Repository.Name,
+		event.PullRequest.Number,
+		message,
+	)
+}
+
+func (h *Handler) logPullRequestFailure(event pullRequestEvent, stage string, err error) {
+	if h.logger == nil {
+		return
+	}
+	h.logger.Printf(
+		"pull_request stage=%s action=%q installation_id=%d repo=%s/%s pr_number=%d error=%v",
+		stage,
+		event.Action,
+		event.Installation.ID,
+		event.Repository.Owner.Login,
+		event.Repository.Name,
+		event.PullRequest.Number,
+		err,
 	)
 }
 

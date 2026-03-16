@@ -33,7 +33,7 @@ type AppTokenProvider struct {
 	client     *http.Client
 }
 
-func NewAppTokenProvider(appID int64, privateKeyPEM, baseURL string) (*AppTokenProvider, error) {
+func NewAppTokenProvider(appID int64, privateKeyPEM, baseURL string, client *http.Client) (*AppTokenProvider, error) {
 	block, _ := pem.Decode([]byte(privateKeyPEM))
 	if block == nil {
 		return nil, fmt.Errorf("decode private key PEM")
@@ -57,7 +57,10 @@ func NewAppTokenProvider(appID int64, privateKeyPEM, baseURL string) (*AppTokenP
 	if !strings.HasSuffix(parsedURL.Path, "/") {
 		parsedURL.Path += "/"
 	}
-	return &AppTokenProvider{appID: appID, privateKey: key, baseURL: parsedURL, client: http.DefaultClient}, nil
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &AppTokenProvider{appID: appID, privateKey: key, baseURL: parsedURL, client: client}, nil
 }
 
 func (p *AppTokenProvider) Token(ctx context.Context, installationID int64) (string, error) {
