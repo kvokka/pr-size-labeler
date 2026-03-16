@@ -135,11 +135,9 @@ None.
 
 ## Events
 
-Subscribe to:
-
 - `Pull request`
 
-That covers the app logic for opened, reopened, synchronize, and edited pull request events.
+That covers the normal app logic for opened, reopened, synchronize, and edited pull request events.
 
 Do not subscribe to `meta`. This app does not use it.
 
@@ -189,7 +187,7 @@ Make sure the target repositories are the ones receiving pull request events.
 - `Webhook URL`
 - `Webhook secret`
 - repository permissions
-- subscribed event `Pull request`
+- required subscribed event `Pull request`
 
 ### GitHub gives you after creation
 
@@ -240,10 +238,34 @@ false
 
 When left at the default, the app keeps logs redacted for public deployments by omitting request IP/header details, installation IDs, and detailed startup/startup-recovery diagnostics. Set it to `true` only when you explicitly want those extra details in logs, such as on a private self-hosted deployment.
 
+### `CONNECT_OPEN_PRS_BACKFILL_ENABLED`
+
+Optional. Default:
+
+```text
+false
+```
+
+When set to `true`, the app handles `Installation` and `Installation repositories` webhook events by scanning newly connected repositories for already-open pull requests and applying the normal size-label flow immediately.
+
+If GitHub does not deliver those install-related events, normal `pull_request` labeling still works and only connect-time backfill is skipped.
+
+This feature does not require extra repository, organization, or account permissions beyond the permissions already listed for the app.
+
+### `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK`
+
+Optional. Default:
+
+```text
+1y
+```
+
+Controls how far back connect-time open-PR backfill looks. It accepts normal Go duration strings plus a `y` shorthand such as `1y`.
+
 ## Where to set the runtime values
 
 - Local development: shell environment or your preferred `.env` loader
-- Default Hugging Face deployment for this repo: GitHub repository secrets `APP_ID`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, plus optional repository variables like `HUGGINGFACE_SPACE` and `GITHUB_API_BASE_URL`; the deploy workflow passes those through the updated `kvokka/huggingface` action into the target Hugging Face Space automatically
+- Default Hugging Face deployment for this repo: GitHub repository secrets `APP_ID`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, plus optional repository variables like `HUGGINGFACE_SPACE` and `GITHUB_API_BASE_URL`; the deploy workflow passes those through the updated `kvokka/huggingface` action into the target Hugging Face Space automatically, and it currently hard-forces `CONNECT_OPEN_PRS_BACKFILL_ENABLED=true` plus `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK=1y`.
 - Manual Hugging Face deployment outside the default workflow: set the same values directly in the target Hugging Face Space secrets and variables
 - Self-hosted deployment: standard process manager, container secret store, or platform secret manager
 

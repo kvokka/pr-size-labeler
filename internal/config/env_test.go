@@ -84,6 +84,46 @@ func TestLoadEnvStartupRecoveryDefaults(t *testing.T) {
 	if env.StartupFailedDeliveryRecoveryLookback != 2*time.Hour {
 		t.Fatalf("lookback = %s, want %s", env.StartupFailedDeliveryRecoveryLookback, 2*time.Hour)
 	}
+	if env.ConnectOpenPRsBackfillEnabled {
+		t.Fatal("expected connect open PR backfill to default to disabled")
+	}
+	if env.ConnectOpenPRsBackfillLookback != 365*24*time.Hour {
+		t.Fatalf("connect backfill lookback = %s, want %s", env.ConnectOpenPRsBackfillLookback, 365*24*time.Hour)
+	}
+}
+
+func TestLoadEnvConnectOpenPRsBackfillConfig(t *testing.T) {
+	t.Setenv("APP_ID", "123")
+	t.Setenv("WEBHOOK_SECRET", "secret")
+	t.Setenv("PRIVATE_KEY", testRSAPrivateKeyPEM(t))
+	t.Setenv("CONNECT_OPEN_PRS_BACKFILL_ENABLED", "true")
+	t.Setenv("CONNECT_OPEN_PRS_BACKFILL_LOOKBACK", "1y")
+
+	env, err := LoadEnv()
+	if err != nil {
+		t.Fatalf("LoadEnv returned error: %v", err)
+	}
+	if !env.ConnectOpenPRsBackfillEnabled {
+		t.Fatal("expected connect open PR backfill to be enabled")
+	}
+	if env.ConnectOpenPRsBackfillLookback != 365*24*time.Hour {
+		t.Fatalf("connect backfill lookback = %s, want %s", env.ConnectOpenPRsBackfillLookback, 365*24*time.Hour)
+	}
+}
+
+func TestLoadEnvRejectsNonPositiveConnectOpenPRsBackfillLookback(t *testing.T) {
+	t.Setenv("APP_ID", "123")
+	t.Setenv("WEBHOOK_SECRET", "secret")
+	t.Setenv("PRIVATE_KEY", testRSAPrivateKeyPEM(t))
+	t.Setenv("CONNECT_OPEN_PRS_BACKFILL_LOOKBACK", "0h")
+
+	_, err := LoadEnv()
+	if err == nil {
+		t.Fatal("expected LoadEnv to reject non-positive connect open PR backfill lookback")
+	}
+	if err.Error() != "CONNECT_OPEN_PRS_BACKFILL_LOOKBACK must be greater than 0" {
+		t.Fatalf("error = %q, want %q", err.Error(), "CONNECT_OPEN_PRS_BACKFILL_LOOKBACK must be greater than 0")
+	}
 }
 
 func TestLoadEnvPrivateLoggingConfig(t *testing.T) {

@@ -33,3 +33,7 @@ go run ./cmd/pr-size-labeler
 ## Development preference
 
 Prefer test-first changes. Keep diffs small. Preserve explicit behavior in docs when changing configuration, deployment, or release automation.
+
+When a feature is added or updated, reflect that change in the docs and README in the same work.
+
+Respect KISS, DRY, and YAGNI. Prefer the simplest solution, avoid duplication, and do not add behavior that is not needed for the current request.

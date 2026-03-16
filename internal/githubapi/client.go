@@ -26,6 +26,18 @@ type PullRequestFile struct {
 	Patch     string `json:"patch"`
 }
 
+type PullRequest struct {
+	Number    int    `json:"number"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+	Labels    []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+}
+
 type IssueComment struct {
 	Body string `json:"body"`
 }
@@ -67,6 +79,37 @@ func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, n
 		}
 	}
 	return allFiles, nil
+}
+
+func (c *Client) ListOpenPullRequests(ctx context.Context, owner, repo string) ([]PullRequest, error) {
+	allPullRequests := []PullRequest{}
+	for page := 1; ; page++ {
+		var pullRequests []PullRequest
+		endpoint := fmt.Sprintf("repos/%s/%s/pulls?state=open&sort=created&direction=desc&per_page=100&page=%d", owner, repo, page)
+		resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			return nil, ErrNotFound
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("GET %s: unexpected status %d", endpoint, resp.StatusCode)
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&pullRequests); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		hasNext := hasNextPage(resp.Header.Values("Link"), page)
+		resp.Body.Close()
+		allPullRequests = append(allPullRequests, pullRequests...)
+		if !hasNext {
+			break
+		}
+	}
+	return allPullRequests, nil
 }
 
 func (c *Client) GetRepositoryContent(ctx context.Context, owner, repo, filePath, ref string) (string, error) {

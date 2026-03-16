@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"pr-size-labeler/internal/auth"
 	"pr-size-labeler/internal/githubapi"
@@ -64,6 +65,8 @@ func TestPullRequestOpenedAppliesSingleSizeLabel(t *testing.T) {
 			return githubapi.NewClient(server.URL+"/", token, server.Client())
 		},
 		false,
+		false,
+		0,
 	)
 	var logs bytes.Buffer
 	handler.logger = log.New(&logs, "", 0)
@@ -121,6 +124,8 @@ func TestPullRequestLogsFailingStage(t *testing.T) {
 			return githubapi.NewClient("http://127.0.0.1:1/", token, &http.Client{})
 		},
 		false,
+		false,
+		0,
 	)
 	var logs bytes.Buffer
 	handler.logger = log.New(&logs, "", 0)
@@ -184,6 +189,8 @@ func TestPullRequestOpenedSelectsLargerLabelFromSymbols(t *testing.T) {
 			return githubapi.NewClient(server.URL+"/", token, server.Client())
 		},
 		false,
+		false,
+		0,
 	)
 
 	payload := map[string]any{
@@ -246,6 +253,8 @@ func TestPullRequestOpenedExcludesGeneratedFilesFromLineAndSymbolTotals(t *testi
 			return githubapi.NewClient(server.URL+"/", token, server.Client())
 		},
 		false,
+		false,
+		0,
 	)
 	var logs bytes.Buffer
 	handler.logger = log.New(&logs, "", 0)
@@ -308,6 +317,8 @@ func TestPullRequestOpenedUsesExplicitConfiguredSymbolThresholds(t *testing.T) {
 			return githubapi.NewClient(server.URL+"/", token, server.Client())
 		},
 		false,
+		false,
+		0,
 	)
 
 	payload := map[string]any{
@@ -367,6 +378,8 @@ func TestPullRequestUsesTopLevelNumberForLogsAndAPICalls(t *testing.T) {
 			return githubapi.NewClient(server.URL+"/", token, server.Client())
 		},
 		false,
+		false,
+		0,
 	)
 	var logs bytes.Buffer
 	handler.logger = log.New(&logs, "", 0)
@@ -399,6 +412,175 @@ func TestPullRequestUsesTopLevelNumberForLogsAndAPICalls(t *testing.T) {
 	assertLogNotContains(t, logs.String(), `pr_number=0`)
 }
 
+func TestInstallationCreatedBackfillsRecentOpenPullRequestsOnly(t *testing.T) {
+	now := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
+	recorded := []requestRecord{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		recorded = append(recorded, requestRecord{Method: r.Method, Path: r.URL.RequestURI(), Body: string(body)})
+		switch {
+		case r.Method == http.MethodGet && r.URL.RequestURI() == "/repos/acme/widgets/pulls?state=open&sort=created&direction=desc&per_page=100&page=1":
+			writeJSON(w, []map[string]any{
+				{"number": 7, "state": "open", "created_at": now.Add(-30 * 24 * time.Hour).Format(time.RFC3339), "labels": []map[string]any{{"name": "size/M"}}, "base": map[string]any{"ref": "main"}},
+				{"number": 6, "state": "open", "created_at": now.Add(-(366 * 24 * time.Hour)).Format(time.RFC3339), "labels": []map[string]any{}, "base": map[string]any{"ref": "main"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/pulls/7/files":
+			writeJSON(w, []map[string]any{{"filename": "internal/service.go", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+ok\n"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/contents/.gitattributes":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/contents/.github/labels.yml":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodDelete && r.URL.RequestURI() == "/repos/acme/widgets/issues/7/labels/size%2FM":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.RequestURI() == "/repos/acme/widgets/labels/size%2FXS":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/labels":
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/issues/7/labels":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+		}
+	}))
+	defer server.Close()
+
+	handler := NewHandler(
+		"secret",
+		auth.StaticTokenProvider("test-token"),
+		func(token string) *githubapi.Client {
+			return githubapi.NewClient(server.URL+"/", token, server.Client())
+		},
+		false,
+		true,
+		365*24*time.Hour,
+	)
+	handler.now = func() time.Time { return now }
+
+	payload := map[string]any{
+		"action":       "created",
+		"installation": map[string]any{"id": 42},
+		"repositories": []map[string]any{{"full_name": "acme/widgets", "name": "widgets"}},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "installation")
+	req.Header.Set("X-Hub-Signature-256", signPayload("secret", body))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("ServeHTTP status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+	}
+	assertContainsRequest(t, recorded, http.MethodGet, "/repos/acme/widgets/pulls?state=open&sort=created&direction=desc&per_page=100&page=1", "")
+	assertContainsRequest(t, recorded, http.MethodDelete, "/repos/acme/widgets/issues/7/labels/size%2FM", "")
+	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/issues/7/labels", `{"labels":["size/XS"]}`)
+	for _, forbidden := range []string{"/repos/acme/widgets/pulls/6/files", "/repos/acme/widgets/issues/6/labels"} {
+		for _, record := range recorded {
+			if record.Path == forbidden {
+				t.Fatalf("unexpected request for old pull request: %s %s", record.Method, record.Path)
+			}
+		}
+	}
+}
+
+func TestInstallationRepositoriesAddedBackfillsWhenEnabled(t *testing.T) {
+	recorded := []requestRecord{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		recorded = append(recorded, requestRecord{Method: r.Method, Path: r.URL.RequestURI(), Body: string(body)})
+		switch {
+		case r.Method == http.MethodGet && r.URL.RequestURI() == "/repos/acme/widgets/pulls?state=open&sort=created&direction=desc&per_page=100&page=1":
+			writeJSON(w, []map[string]any{{"number": 7, "state": "open", "created_at": "2026-03-16T10:00:00Z", "labels": []map[string]any{}, "base": map[string]any{"ref": "main"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/pulls/7/files":
+			writeJSON(w, []map[string]any{{"filename": "internal/service.go", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+ok\n"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/contents/.gitattributes":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/contents/.github/labels.yml":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodGet && r.URL.RequestURI() == "/repos/acme/widgets/labels/size%2FXS":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/labels":
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/issues/7/labels":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+		}
+	}))
+	defer server.Close()
+
+	handler := NewHandler(
+		"secret",
+		auth.StaticTokenProvider("test-token"),
+		func(token string) *githubapi.Client {
+			return githubapi.NewClient(server.URL+"/", token, server.Client())
+		},
+		false,
+		true,
+		365*24*time.Hour,
+	)
+
+	payload := map[string]any{
+		"action":             "added",
+		"installation":       map[string]any{"id": 42},
+		"repositories_added": []map[string]any{{"full_name": "acme/widgets", "name": "widgets"}},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "installation_repositories")
+	req.Header.Set("X-Hub-Signature-256", signPayload("secret", body))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("ServeHTTP status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+	}
+	assertContainsRequest(t, recorded, http.MethodGet, "/repos/acme/widgets/pulls?state=open&sort=created&direction=desc&per_page=100&page=1", "")
+	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/issues/7/labels", `{"labels":["size/XS"]}`)
+}
+
+func TestInstallationCreatedDoesNothingWhenBackfillDisabled(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	handler := NewHandler(
+		"secret",
+		auth.StaticTokenProvider("test-token"),
+		func(token string) *githubapi.Client {
+			return githubapi.NewClient(server.URL+"/", token, server.Client())
+		},
+		false,
+		false,
+		365*24*time.Hour,
+	)
+
+	payload := map[string]any{
+		"action":       "created",
+		"installation": map[string]any{"id": 42},
+		"repositories": []map[string]any{{"full_name": "acme/widgets", "name": "widgets"}},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "installation")
+	req.Header.Set("X-Hub-Signature-256", signPayload("secret", body))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("ServeHTTP status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+	}
+	if called {
+		t.Fatal("unexpected outbound GitHub call when connect backfill is disabled")
+	}
+}
+
 func TestPrivateRequestLoggingCanBeEnabled(t *testing.T) {
 	handler := NewHandler(
 		"secret",
@@ -407,6 +589,8 @@ func TestPrivateRequestLoggingCanBeEnabled(t *testing.T) {
 			return githubapi.NewClient("http://127.0.0.1:1/", token, &http.Client{})
 		},
 		true,
+		false,
+		0,
 	)
 	var logs bytes.Buffer
 	handler.logger = log.New(&logs, "", 0)
@@ -443,6 +627,8 @@ func TestInvalidSignatureRejected(t *testing.T) {
 			return githubapi.NewClient(server.URL+"/", token, server.Client())
 		},
 		false,
+		false,
+		0,
 	)
 	var logs bytes.Buffer
 	handler.logger = log.New(&logs, "", 0)
@@ -480,6 +666,8 @@ func TestPingReturnsOKWithoutGitHubAPIRequests(t *testing.T) {
 			return githubapi.NewClient(server.URL+"/", token, server.Client())
 		},
 		false,
+		false,
+		0,
 	)
 	var logs bytes.Buffer
 	handler.logger = log.New(&logs, "", 0)

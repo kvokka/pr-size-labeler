@@ -37,6 +37,8 @@ Supported actions:
 - `pull_request.synchronize`
 - `pull_request.edited`
 
+On repository connect, the app can also backfill labels for already-open pull requests inside a configured lookback window.
+
 ## Default labels
 
 The thresholds intentionally follow the same sizing model as the original `pull-request-size` project, but the default colors are slightly different.
@@ -142,6 +144,8 @@ Copy `.env.example` and set:
 - optional `LOG_PRIVATE_DETAILS`
 - optional `STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED`
 - optional `STARTUP_FAILED_DELIVERY_RECOVERY_LOOKBACK`
+- optional `CONNECT_OPEN_PRS_BACKFILL_ENABLED`
+- optional `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK`
 
 See [`docs/github-app.md`](docs/github-app.md) for where each value comes from.
 
@@ -172,6 +176,35 @@ Behavior notes:
 - it only redelivers deliveries whose GitHub delivery `status` is not `OK`
 - repeated restarts inside the same lookback window can cause the same failed original delivery to be redelivered again
 - GitHub only allows webhook redelivery for recent deliveries, so this is a best-effort recovery tool, not a durable queue
+
+### Connect-time backfill for already-open pull requests
+
+When a repository is connected to the app, `pr-size-labeler` can proactively label pull requests that are already open instead of waiting for their next `pull_request` webhook.
+
+This feature is optional. If you leave it disabled, normal `pull_request` labeling still works unchanged.
+
+For this repository's default GitHub Actions → Hugging Face deployment, connect-time backfill is enabled automatically with a `1y` lookback.
+
+Environment variables:
+
+- `CONNECT_OPEN_PRS_BACKFILL_ENABLED` — set to `true` to enable connect-time backfill
+- `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK` — lookback window for already-open pull requests; accepts normal Go durations and a `y` shorthand such as `1y`; default `1y`
+
+Example:
+
+```bash
+CONNECT_OPEN_PRS_BACKFILL_ENABLED=true
+CONNECT_OPEN_PRS_BACKFILL_LOOKBACK=1y
+```
+
+Behavior notes:
+
+- this runs only when repositories are connected to the app
+- it handles both initial installs and repositories added to an existing installation
+- it does not require extra repository, organization, or account permissions beyond the normal permissions already listed for this app
+- it only inspects pull requests that are still open
+- it only processes pull requests created inside the configured lookback window
+- it reuses the normal PR-labeling flow, including `.gitattributes`, `.github/labels.yml`, label cleanup, and optional comments
 
 ### 3. Run locally
 

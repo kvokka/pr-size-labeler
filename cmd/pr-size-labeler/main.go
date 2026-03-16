@@ -42,6 +42,8 @@ func main() {
 			return githubapi.NewClient(env.GitHubAPIBaseURL, token, outboundClient)
 		},
 		env.LogPrivateDetails,
+		env.ConnectOpenPRsBackfillEnabled,
+		env.ConnectOpenPRsBackfillLookback,
 	)
 	recoveryRunner := recovery.NewStartupRecovery(
 		log.Default(),
@@ -94,9 +96,19 @@ func privateKeyDiagnosticSummary(privateKey string) string {
 func logStartupConfig(env config.Env) {
 	if env.LogPrivateDetails {
 		log.Printf("startup config app_id=%d listen_addr=%s github_api_base_url=%s %s", env.AppID, env.ListenAddr, env.GitHubAPIBaseURL, privateKeyDiagnosticSummary(env.PrivateKeyPEM))
+		logConnectOpenPRsBackfillConfig(env)
 		return
 	}
 	log.Printf("startup config private_details=false")
+	logConnectOpenPRsBackfillConfig(env)
+}
+
+func logConnectOpenPRsBackfillConfig(env config.Env) {
+	if env.ConnectOpenPRsBackfillEnabled {
+		log.Printf("connect_open_prs_backfill enabled=true lookback=%s github_app_ui_does_not_currently_expose_installation_checkboxes=true installation_target_ui_event_is_different=true extra_permissions_required=false normal_pull_request_labeling_without_backfill=true", env.ConnectOpenPRsBackfillLookback)
+		return
+	}
+	log.Printf("connect_open_prs_backfill enabled=false explicit_event_subscriptions_required=false extra_permissions_required=false normal_pull_request_labeling_without_backfill=true")
 }
 
 func safePrefix(value string, count int) string {

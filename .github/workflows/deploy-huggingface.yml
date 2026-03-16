@@ -80,3 +80,5 @@ jobs:
             LISTEN_ADDR: ":7860"
             GITHUB_API_BASE_URL: "${{ vars.GITHUB_API_BASE_URL || 'https://api.github.com/' }}"
             STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED: "true"
+            CONNECT_OPEN_PRS_BACKFILL_ENABLED: "true"
+            CONNECT_OPEN_PRS_BACKFILL_LOOKBACK: "1y"
