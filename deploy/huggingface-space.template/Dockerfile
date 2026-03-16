@@ -1,6 +1,9 @@
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
-RUN useradd --create-home --shell /usr/sbin/nologin appuser
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates=20250419 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /usr/sbin/nologin appuser
 
 WORKDIR /app
 COPY pr-size-labeler /app/pr-size-labeler
