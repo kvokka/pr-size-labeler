@@ -25,5 +25,6 @@ Optional Space variables:
 
 - `LISTEN_ADDR` (set to `:7860` by the workflow)
 - `GITHUB_API_BASE_URL` (set by the workflow, defaults to GitHub.com)
+- `LOG_PRIVATE_DETAILS` (optional, defaults to `false`; enable only if you want private diagnostics in logs)
 
 See the GitHub repository README and deployment docs for the full setup flow.

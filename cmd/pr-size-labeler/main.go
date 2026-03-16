@@ -22,12 +22,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("startup config app_id=%d listen_addr=%s github_api_base_url=%s %s", env.AppID, env.ListenAddr, env.GitHubAPIBaseURL, privateKeyDiagnosticSummary(env.PrivateKeyPEM))
+	logStartupConfig(env)
 	outboundClient := &http.Client{Timeout: 30 * time.Second}
 
 	tokenProvider, err := auth.NewAppTokenProvider(env.AppID, env.PrivateKeyPEM, env.GitHubAPIBaseURL, outboundClient)
 	if err != nil {
-		log.Printf("token provider initialization failed: %v; %s", err, privateKeyDiagnosticSummary(env.PrivateKeyPEM))
+		if env.LogPrivateDetails {
+			log.Printf("token provider initialization failed: %v; %s", err, privateKeyDiagnosticSummary(env.PrivateKeyPEM))
+		} else {
+			log.Printf("token provider initialization failed: %v", err)
+		}
 		log.Fatal(err)
 	}
 
@@ -37,6 +41,7 @@ func main() {
 		func(token string) *githubapi.Client {
 			return githubapi.NewClient(env.GitHubAPIBaseURL, token, outboundClient)
 		},
+		env.LogPrivateDetails,
 	)
 	recoveryRunner := recovery.NewStartupRecovery(
 		log.Default(),
@@ -84,6 +89,14 @@ func privateKeyDiagnosticSummary(privateKey string) string {
 		strings.Contains(privateKey, `\n`) || strings.Contains(privateKey, `\r`),
 		strings.Contains(privateKey, "\r"),
 	)
+}
+
+func logStartupConfig(env config.Env) {
+	if env.LogPrivateDetails {
+		log.Printf("startup config app_id=%d listen_addr=%s github_api_base_url=%s %s", env.AppID, env.ListenAddr, env.GitHubAPIBaseURL, privateKeyDiagnosticSummary(env.PrivateKeyPEM))
+		return
+	}
+	log.Printf("startup config private_details=false")
 }
 
 func safePrefix(value string, count int) string {

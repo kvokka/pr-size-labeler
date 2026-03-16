@@ -16,6 +16,7 @@ type Env struct {
 	AppID                                 int64
 	PrivateKeyPEM                         string
 	GitHubAPIBaseURL                      string
+	LogPrivateDetails                     bool
 	StartupFailedDeliveryRecoveryEnabled  bool
 	StartupFailedDeliveryRecoveryLookback time.Duration
 }
@@ -50,6 +51,11 @@ func LoadEnv() (Env, error) {
 		apiBaseURL = "https://api.github.com/"
 	}
 
+	logPrivateDetails, err := parseBoolEnv("LOG_PRIVATE_DETAILS", false)
+	if err != nil {
+		return Env{}, err
+	}
+
 	recoveryEnabled, err := parseBoolEnv("STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED", false)
 	if err != nil {
 		return Env{}, err
@@ -68,6 +74,7 @@ func LoadEnv() (Env, error) {
 		AppID:                                 appID,
 		PrivateKeyPEM:                         privateKeyPEM,
 		GitHubAPIBaseURL:                      apiBaseURL,
+		LogPrivateDetails:                     logPrivateDetails,
 		StartupFailedDeliveryRecoveryEnabled:  recoveryEnabled,
 		StartupFailedDeliveryRecoveryLookback: recoveryLookback,
 	}, nil

@@ -84,7 +84,7 @@ func TestStartupRecoveryRedeliversFailedOnly(t *testing.T) {
 	})
 	runner.now = func() time.Time { return now }
 
-	err := runner.Run(context.Background(), config.Env{StartupFailedDeliveryRecoveryEnabled: true, StartupFailedDeliveryRecoveryLookback: 2 * time.Hour})
+	err := runner.Run(context.Background(), config.Env{StartupFailedDeliveryRecoveryEnabled: true, StartupFailedDeliveryRecoveryLookback: 2 * time.Hour, LogPrivateDetails: true})
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -103,6 +103,40 @@ func TestStartupRecoveryRedeliversFailedOnly(t *testing.T) {
 	} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("expected logs to contain %q, got %s", want, logs.String())
+		}
+	}
+}
+
+func TestStartupRecoveryRedactsDeliveryDetailsByDefault(t *testing.T) {
+	now := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
+	client := &fakeDeliveryClient{
+		deliveries: []githubapi.AppHookDelivery{{ID: 2, Status: "INVALID_HTTP_RESPONSE", Event: "pull_request", Action: "opened", DeliveredAt: now.Add(-20 * time.Minute)}},
+	}
+	var logs bytes.Buffer
+	runner := NewStartupRecovery(log.New(&logs, "", 0), fakeAppTokenSource{token: "app-jwt"}, func(token string) DeliveryClient {
+		if token != "app-jwt" {
+			t.Fatalf("unexpected token %q", token)
+		}
+		return client
+	})
+	runner.now = func() time.Time { return now }
+
+	err := runner.Run(context.Background(), config.Env{StartupFailedDeliveryRecoveryEnabled: true, StartupFailedDeliveryRecoveryLookback: 2 * time.Hour, LogPrivateDetails: false})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for _, want := range []string{
+		"startup_failed_delivery_recovery enabled=true",
+		"startup_failed_delivery_recovery redelivery_success=true",
+		"summary listed=1 failed=1 redelivered=1 redelivery_failures=0",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("expected logs to contain %q, got %s", want, logs.String())
+		}
+	}
+	for _, forbidden := range []string{"lookback=", "cutoff=", "delivery_id=2", `event="pull_request"`, `action="opened"`, "status=", "delivered_at="} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("expected logs not to contain %q, got %s", forbidden, logs.String())
 		}
 	}
 }

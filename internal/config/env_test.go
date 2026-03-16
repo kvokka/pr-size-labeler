@@ -78,8 +78,26 @@ func TestLoadEnvStartupRecoveryDefaults(t *testing.T) {
 	if env.StartupFailedDeliveryRecoveryEnabled {
 		t.Fatal("expected startup recovery to default to disabled")
 	}
+	if env.LogPrivateDetails {
+		t.Fatal("expected private logging to default to disabled")
+	}
 	if env.StartupFailedDeliveryRecoveryLookback != 2*time.Hour {
 		t.Fatalf("lookback = %s, want %s", env.StartupFailedDeliveryRecoveryLookback, 2*time.Hour)
+	}
+}
+
+func TestLoadEnvPrivateLoggingConfig(t *testing.T) {
+	t.Setenv("APP_ID", "123")
+	t.Setenv("WEBHOOK_SECRET", "secret")
+	t.Setenv("PRIVATE_KEY", testRSAPrivateKeyPEM(t))
+	t.Setenv("LOG_PRIVATE_DETAILS", "true")
+
+	env, err := LoadEnv()
+	if err != nil {
+		t.Fatalf("LoadEnv returned error: %v", err)
+	}
+	if !env.LogPrivateDetails {
+		t.Fatal("expected private logging to be enabled")
 	}
 }
 

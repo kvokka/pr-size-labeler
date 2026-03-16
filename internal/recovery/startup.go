@@ -44,7 +44,11 @@ func (r *StartupRecovery) Run(ctx context.Context, env config.Env) error {
 		return nil
 	}
 	cutoff := r.now().UTC().Add(-env.StartupFailedDeliveryRecoveryLookback)
-	r.logger.Printf("startup_failed_delivery_recovery enabled=true lookback=%s cutoff=%s", env.StartupFailedDeliveryRecoveryLookback, cutoff.Format(time.RFC3339))
+	if env.LogPrivateDetails {
+		r.logger.Printf("startup_failed_delivery_recovery enabled=true lookback=%s cutoff=%s", env.StartupFailedDeliveryRecoveryLookback, cutoff.Format(time.RFC3339))
+	} else {
+		r.logger.Printf("startup_failed_delivery_recovery enabled=true")
+	}
 	appToken, err := r.appTokenSource.AppToken(ctx)
 	if err != nil {
 		return fmt.Errorf("create app token for startup recovery: %w", err)
@@ -62,14 +66,24 @@ func (r *StartupRecovery) Run(ctx context.Context, env config.Env) error {
 			continue
 		}
 		failed++
-		r.logger.Printf("startup_failed_delivery_recovery delivery_id=%d event=%q action=%q status=%q delivered_at=%s redelivery=%t attempting_redelivery=true", delivery.ID, delivery.Event, delivery.Action, delivery.Status, delivery.DeliveredAt.Format(time.RFC3339), delivery.Redelivery)
+		if env.LogPrivateDetails {
+			r.logger.Printf("startup_failed_delivery_recovery delivery_id=%d event=%q action=%q status=%q delivered_at=%s redelivery=%t attempting_redelivery=true", delivery.ID, delivery.Event, delivery.Action, delivery.Status, delivery.DeliveredAt.Format(time.RFC3339), delivery.Redelivery)
+		}
 		if err := client.RedeliverAppHookDelivery(ctx, delivery.ID); err != nil {
 			failedRedeliveries++
-			r.logger.Printf("startup_failed_delivery_recovery delivery_id=%d redelivery_success=false error=%v", delivery.ID, err)
+			if env.LogPrivateDetails {
+				r.logger.Printf("startup_failed_delivery_recovery delivery_id=%d redelivery_success=false error=%v", delivery.ID, err)
+			} else {
+				r.logger.Printf("startup_failed_delivery_recovery redelivery_success=false")
+			}
 			continue
 		}
 		redelivered++
-		r.logger.Printf("startup_failed_delivery_recovery delivery_id=%d redelivery_success=true", delivery.ID)
+		if env.LogPrivateDetails {
+			r.logger.Printf("startup_failed_delivery_recovery delivery_id=%d redelivery_success=true", delivery.ID)
+		} else {
+			r.logger.Printf("startup_failed_delivery_recovery redelivery_success=true")
+		}
 	}
 	r.logger.Printf("startup_failed_delivery_recovery summary listed=%d failed=%d redelivered=%d redelivery_failures=%d", len(deliveries), failed, redelivered, failedRedeliveries)
 	return nil

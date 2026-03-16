@@ -39,6 +39,7 @@ Set these in the GitHub repository.
 
 - `HUGGINGFACE_SPACE`
 - `GITHUB_API_BASE_URL`
+- `LOG_PRIVATE_DETAILS`
 
 #### Optional GitHub repository secrets for startup recovery behavior
 
@@ -116,6 +117,7 @@ The workflow configures these on the target Hugging Face Space automatically thr
 - Space secret `WEBHOOK_SECRET`: the same secret configured in the GitHub App webhook settings
 - Space variable `LISTEN_ADDR`: forced to `:7860` for Hugging Face Spaces
 - Space variable `GITHUB_API_BASE_URL`: taken from the GitHub repo variable if set, otherwise defaults to `https://api.github.com/`
+- Space variable `LOG_PRIVATE_DETAILS`: optional; leave unset or `false` for public deployments unless you explicitly want private diagnostics in logs
 - Space variable `STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED`: forced to `true` in this repo's default deployment so startup recovery is active on Hugging Face without extra manual setup
 
 That means this repo's default deployment does not require the separate custom Python setup that older versions needed, and it also does not require you to click into Hugging Face Space settings manually as long as the GitHub repository secrets and variables are configured correctly.
@@ -167,12 +169,13 @@ Recommended private-mode rules:
 
 - use a dedicated `PROXY_HF_TOKEN` when proxying
 - keep `APP_ID`, `PRIVATE_KEY`, and `WEBHOOK_SECRET` in Space secrets, never public variables
+- keep `LOG_PRIVATE_DETAILS=false` unless the deployment is private and you explicitly want request/header/startup diagnostics in logs
 - restrict `proxy_allow_origins` if the endpoint is only meant for one site or service
 - if you use a fork, do not leave `HUGGINGFACE_SPACE` at the default `kvokka/pr-size-labeler`; point it to your own Space instead
 
 ## Reverse proxy
 
-If you run `pr-size-labeler` outside Hugging Face, putting it behind a reverse proxy is still the simplest production setup. The app logs source information from forwarded headers and remote address, which is useful when that proxy is public.
+If you run `pr-size-labeler` outside Hugging Face, putting it behind a reverse proxy is still the simplest production setup. If you enable `LOG_PRIVATE_DETAILS=true`, the app will also log source information from forwarded headers and remote address, which can be useful for debugging a public proxy.
 
 ## Generic self-hosting
 

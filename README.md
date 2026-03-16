@@ -139,6 +139,7 @@ Copy `.env.example` and set:
 - `WEBHOOK_SECRET`
 - optional `LISTEN_ADDR`
 - optional `GITHUB_API_BASE_URL`
+- optional `LOG_PRIVATE_DETAILS`
 - optional `STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED`
 - optional `STARTUP_FAILED_DELIVERY_RECOVERY_LOOKBACK`
 
@@ -152,6 +153,7 @@ For this repository's default GitHub Actions → Hugging Face deployment, startu
 
 Environment variables:
 
+- `LOG_PRIVATE_DETAILS` — set to `true` to include request IP/header details, installation IDs, and detailed startup/startup-recovery diagnostics in logs; default `false`
 - `STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED` — set to `true` to enable startup recovery
 - `STARTUP_FAILED_DELIVERY_RECOVERY_LOOKBACK` — Go duration string for how far back to inspect deliveries, default `2h`
 

@@ -230,6 +230,16 @@ https://api.github.com/
 
 Change it only if you run against GitHub Enterprise Server.
 
+### `LOG_PRIVATE_DETAILS`
+
+Optional. Default:
+
+```text
+false
+```
+
+When left at the default, the app keeps logs redacted for public deployments by omitting request IP/header details, installation IDs, and detailed startup/startup-recovery diagnostics. Set it to `true` only when you explicitly want those extra details in logs, such as on a private self-hosted deployment.
+
 ## Where to set the runtime values
 
 - Local development: shell environment or your preferred `.env` loader
