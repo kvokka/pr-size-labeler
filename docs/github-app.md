@@ -168,6 +168,8 @@ The full file contents become:
 
 - `PRIVATE_KEY`
 
+Practical note: the normal way to store this is to copy the full `.pem` file contents and paste them into your GitHub Actions secret. For example, `cat your-app.private-key.pem | pbcopy` on macOS is fine. The app accepts the original multi-line PEM, and it also tolerates a flattened version if a platform collapses the line breaks during secret transport.
+
 ### 3. Install the app
 
 Install the GitHub App on the repositories where you want PR size labels to be managed.

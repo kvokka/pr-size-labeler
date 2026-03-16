@@ -78,6 +78,8 @@ Get them like this:
 3. After the app is created, open its settings page and copy the numeric App ID. Save it as the GitHub repository secret `APP_ID`.
 4. On the same settings page, generate a private key and download the `.pem` file. Copy the full file contents into the GitHub repository secret `PRIVATE_KEY`.
 
+Practical note: copying the GitHub-generated key file with a command like `cat my-key.private-key.pem | pbcopy` and pasting it into the GitHub Actions secret is a valid way to store it. The app accepts the normal multi-line PEM form, and it also tolerates platforms that flatten that PEM into a single line during secret transport.
+
 In short:
 
 - `APP_ID`: copied from the GitHub App settings page after creation

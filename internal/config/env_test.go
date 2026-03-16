@@ -22,6 +22,7 @@ func TestLoadEnvNormalizesPrivateKeyFormats(t *testing.T) {
 		{name: "escaped newlines", raw: strings.ReplaceAll(validPEM, "\n", `\n`)},
 		{name: "quoted escaped newlines", raw: fmt.Sprintf("%q", strings.ReplaceAll(validPEM, "\n", `\n`))},
 		{name: "quoted crlf pem", raw: "\"" + strings.ReplaceAll(validPEM, "\n", "\r\n") + "\""},
+		{name: "flattened pem", raw: strings.ReplaceAll(validPEM, "\n", "")},
 		{name: "surrounding whitespace", raw: "  \n" + validPEM + "\n  "},
 	}
 
