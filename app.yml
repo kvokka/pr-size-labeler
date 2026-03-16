@@ -1,0 +1,10 @@
+default_events:
+  - pull_request
+
+default_permissions:
+  pull_requests: write
+  contents: read
+  metadata: read
+
+name: pr-size
+description: OSS GitHub App that applies transparent pull request size labels.
