@@ -38,14 +38,15 @@ Live [repo](https://github.com/kvokka/pr-size-labeler-test/pulls)
 
 For normal pull request labeling, `pr-size-labeler`:
 
-1. loads `.github/labels.yml` from the repository default branch
+1. loads `.github/labels.yml` from the repository default branch when present, otherwise uses the built-in default label set
 2. reads pull request file additions/deletions and patch hunks
 3. computes effective changed lines and effective changed symbols
 4. subtracts files matched by `.gitattributes` entries marked `linguist-generated=true`
 5. chooses the largest eligible size label when either that label's `lines` threshold or its `symbols` threshold is met
 6. removes older configured size labels
-7. applies exactly one configured size label
-8. optionally adds one configured comment
+7. creates the selected repository label if needed
+8. applies exactly one configured size label
+9. optionally adds one configured comment
 
 Normal labeling runs for:
 
@@ -59,10 +60,11 @@ Proactive relabeling runs only when `.github/labels.yml` explicitly enables it:
 - on repository connect (`installation.created`, `installation_repositories.added`)
 - on merged `pull_request.closed` events into the default branch when that PR changed `.github/labels.yml`
 
-Fail-closed behavior:
+Config behavior:
 
-- if `.github/labels.yml` is missing or invalid, the app makes no label changes
-- repository labels must already exist; the app no longer creates or updates repository labels
+- if `.github/labels.yml` is missing, normal PR labeling uses built-in defaults and backfill stays disabled
+- if `.github/labels.yml` is invalid, the app makes no label changes
+- if the selected repository label does not exist yet, the app creates it
 
 ## Default labels
 
@@ -109,7 +111,7 @@ Each label supports:
 - `lines`
 - `symbols` (optional)
 - `comment` (optional)
-- `color` (optional reference metadata only; the app does not create or recolor repository labels)
+- `color` (optional; used when the app creates a missing repository label)
 
 If `symbols` is omitted, it defaults to `lines * 100`.
 
@@ -201,10 +203,7 @@ Copy `.env.example` and set:
 
 See [`docs/github-app.md`](docs/github-app.md) for where each value comes from.
 
-Also make sure each target repository has:
-
-- a valid default-branch `.github/labels.yml`
-- repository labels that already exist with names matching the config
+Optionally add `.github/labels.yml` on the default branch if you want custom thresholds, custom names/comments/colors, or proactive backfill. If the file is absent, normal pull request labeling still works with the built-in defaults.
 
 ### Startup recovery for missed failed deliveries
 
@@ -251,8 +250,7 @@ Behavior notes:
 
 How to backfill existing open pull requests:
 
-1. Make sure the repository labels already exist with the names your config uses.
-2. Add or update `.github/labels.yml` on the default branch so backfill is enabled. Minimal example:
+1. Add or update `.github/labels.yml` on the default branch so backfill is enabled. Minimal example:
 
 ```yaml
 backfill:
@@ -260,8 +258,9 @@ backfill:
   lookback: 720h
 ```
 
-3. If the app is not installed yet, merge that config first and then install the app. The installation event will relabel open pull requests inside the lookback window.
-4. If the app is already installed, merge a pull request that changes `.github/labels.yml` on the default branch with `backfill.enabled: true`. That merge event will relabel open pull requests inside the lookback window.
+2. If the app is not installed yet, merge that config first and then install the app. The installation event will relabel open pull requests inside the lookback window.
+3. If the app is already installed, merge a pull request that changes `.github/labels.yml` on the default branch with `backfill.enabled: true`. That merge event will relabel open pull requests inside the lookback window.
+4. The app will create any missing size labels as it applies them.
 5. If you only wanted a one-time backfill, merge a follow-up config change that sets `backfill.enabled: false` again after the relabel run you wanted has already happened.
 
 ### 3. Run locally

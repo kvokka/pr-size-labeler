@@ -85,15 +85,35 @@ func TestPullRequestOpenedAppliesSingleSizeLabel(t *testing.T) {
 	assertLogNotContains(t, logs.String(), `installation_id=42`)
 }
 
-func TestPullRequestOpenedDoesNothingWhenLabelsConfigMissing(t *testing.T) {
+func TestPullRequestOpenedUsesBuiltInDefaultsWhenLabelsConfigMissing(t *testing.T) {
 	recorded := []requestRecord{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		recorded = append(recorded, requestRecord{Method: r.Method, Path: r.URL.RequestURI(), Body: string(body)})
-		if r.URL.RequestURI() != "/repos/acme/widgets/contents/.github/labels.yml?ref=main" {
+		switch r.URL.RequestURI() {
+		case "/repos/acme/widgets/contents/.github/labels.yml?ref=main":
+			w.WriteHeader(http.StatusNotFound)
+		case "/repos/acme/widgets/pulls/7/files?per_page=100&page=1":
+			writeJSON(w, []map[string]any{{"filename": "internal/service.go", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+ok\n"}})
+		case "/repos/acme/widgets/contents/.gitattributes?ref=main":
+			w.WriteHeader(http.StatusNotFound)
+		case "/repos/acme/widgets/labels/size%2FXS":
+			w.WriteHeader(http.StatusNotFound)
+		case "/repos/acme/widgets/labels":
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+			}
+			w.WriteHeader(http.StatusCreated)
+		case "/repos/acme/widgets/issues/7/labels/size%2FM":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+			}
+			w.WriteHeader(http.StatusOK)
+		case "/repos/acme/widgets/issues/7/labels":
+			w.WriteHeader(http.StatusOK)
+		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
 		}
-		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
@@ -103,8 +123,8 @@ func TestPullRequestOpenedDoesNothingWhenLabelsConfigMissing(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("ServeHTTP status = %d, want 200; body=%s", resp.Code, resp.Body.String())
 	}
-	assertNoRequestPath(t, recorded, "/repos/acme/widgets/pulls/7/files?per_page=100&page=1")
-	assertNoMutationRequests(t, recorded)
+	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/labels", `{"color":"2FBF6B","name":"size/XS"}`)
+	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/issues/7/labels", `{"labels":["size/XS"]}`)
 }
 
 func TestPullRequestOpenedSkipsInvalidLabelsConfig(t *testing.T) {
@@ -294,7 +314,7 @@ func TestPullRequestUsesTopLevelNumberForLogsAndAPICalls(t *testing.T) {
 	assertLogNotContains(t, logs.String(), `pr_number=1`)
 }
 
-func TestPullRequestOpenedFailsWhenSelectedRepositoryLabelDoesNotExist(t *testing.T) {
+func TestPullRequestOpenedCreatesSelectedRepositoryLabelWhenMissing(t *testing.T) {
 	recorded := []requestRecord{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -308,6 +328,18 @@ func TestPullRequestOpenedFailsWhenSelectedRepositoryLabelDoesNotExist(t *testin
 			w.WriteHeader(http.StatusNotFound)
 		case "/repos/acme/widgets/labels/size%2FXS":
 			w.WriteHeader(http.StatusNotFound)
+		case "/repos/acme/widgets/labels":
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+			}
+			w.WriteHeader(http.StatusCreated)
+		case "/repos/acme/widgets/issues/7/labels/size%2FM":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+			}
+			w.WriteHeader(http.StatusOK)
+		case "/repos/acme/widgets/issues/7/labels":
+			w.WriteHeader(http.StatusOK)
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.RequestURI())
 		}
@@ -317,11 +349,11 @@ func TestPullRequestOpenedFailsWhenSelectedRepositoryLabelDoesNotExist(t *testin
 	handler := newTestHandler(server, false)
 	resp := serveWebhook(handler, "pull_request", pullRequestPayload("opened", "main", "main", false, 7, []string{"size/M"}))
 
-	if resp.Code != http.StatusBadGateway {
-		t.Fatalf("ServeHTTP status = %d, want 502; body=%s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusOK {
+		t.Fatalf("ServeHTTP status = %d, want 200; body=%s", resp.Code, resp.Body.String())
 	}
-	assertNoRequestPath(t, recorded, "/repos/acme/widgets/issues/7/labels/size%2FM")
-	assertNoRequestPath(t, recorded, "/repos/acme/widgets/issues/7/labels")
+	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/labels", `{"color":"2FBF6B","name":"size/XS"}`)
+	assertContainsRequest(t, recorded, http.MethodPost, "/repos/acme/widgets/issues/7/labels", `{"labels":["size/XS"]}`)
 }
 
 func TestInstallationCreatedBackfillsRecentOpenPullRequestsOnlyWhenEnabledInConfig(t *testing.T) {

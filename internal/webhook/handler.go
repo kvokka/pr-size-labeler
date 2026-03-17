@@ -24,7 +24,6 @@ import (
 )
 
 var (
-	errLabelsConfigMissing = errors.New("labels config missing")
 	errLabelsConfigInvalid = errors.New("labels config invalid")
 )
 
@@ -202,11 +201,11 @@ func (h *Handler) handlePullRequest(ctx context.Context, event pullRequestEvent)
 	}
 
 	target := event.target()
-	labelsConfig, configRef, err := h.loadRepositoryLabelsConfig(ctx, client, target.Owner, target.Repo, event.defaultBranch())
+	labelsConfig, configRef, usedDefaults, err := h.loadRepositoryLabelsConfig(ctx, client, target.Owner, target.Repo, event.defaultBranch())
 	if err != nil {
 		return h.handlePullRequestLabelsConfigError(target, configRef, err)
 	}
-	h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("loaded %d label definition(s) from default branch %s", len(labelsConfig.Labels), configRef))
+	h.logLabelsConfigLoaded(target, configRef, len(labelsConfig.Labels), usedDefaults)
 	return h.processPullRequest(ctx, client, target, labelsConfig.Labels)
 }
 
@@ -238,9 +237,12 @@ func (h *Handler) handleMergedLabelsConfigChange(ctx context.Context, client *gi
 		return nil
 	}
 
-	labelsConfig, configRef, err := h.loadRepositoryLabelsConfig(ctx, client, owner, repo, defaultBranch)
+	labelsConfig, configRef, usedDefaults, err := h.loadRepositoryLabelsConfig(ctx, client, owner, repo, defaultBranch)
 	if err != nil {
 		return h.handlePullRequestConfigChangeLabelsError(event, configRef, err)
+	}
+	if usedDefaults {
+		h.logPullRequestStage(event, "labels_config", fmt.Sprintf("using built-in defaults because .github/labels.yml is missing from default branch %s", safeBranch(configRef)))
 	}
 	if !labelsConfig.Backfill.Enabled {
 		h.logPullRequestStage(event, "config_change", "backfill disabled in .github/labels.yml; skipping open pull request relabel")
@@ -265,7 +267,7 @@ func (h *Handler) handleConnectEvent(ctx context.Context, eventName string, even
 		if err != nil {
 			return err
 		}
-		labelsConfig, configRef, err := h.loadRepositoryLabelsConfig(ctx, client, owner, repo, "")
+		labelsConfig, configRef, usedDefaults, err := h.loadRepositoryLabelsConfig(ctx, client, owner, repo, "")
 		if err != nil {
 			if h.logConnectLabelsConfigSkip(owner, repo, configRef, err) {
 				continue
@@ -273,7 +275,11 @@ func (h *Handler) handleConnectEvent(ctx context.Context, eventName string, even
 			return err
 		}
 		if !labelsConfig.Backfill.Enabled {
-			h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped backfill_enabled=false", owner, repo, configRef)
+			if usedDefaults {
+				h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped backfill_enabled=false labels_config=built_in_defaults", owner, repo, configRef)
+			} else {
+				h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped backfill_enabled=false", owner, repo, configRef)
+			}
 			continue
 		}
 		if err := h.relabelOpenPullRequests(ctx, client, event.Installation.ID, owner, repo, event.Action, labelsConfig.Labels, labelsConfig.Backfill.Lookback); err != nil {
@@ -341,9 +347,9 @@ func (h *Handler) processPullRequest(ctx context.Context, client *githubapi.Clie
 	selected := labelSet.Select(effectiveLines, effectiveSymbols)
 	h.logPullRequestTargetStage(target, "selection", fmt.Sprintf("effective_lines=%d effective_symbols=%d selected_label=%s", effectiveLines, effectiveSymbols, selected.Name))
 
-	h.logPullRequestTargetStage(target, "label_check", fmt.Sprintf("verifying label %s exists", selected.Name))
-	if err := h.verifyLabelExists(ctx, client, target.Owner, target.Repo, selected.Name); err != nil {
-		h.logPullRequestTargetFailure(target, "label_check", err)
+	h.logPullRequestTargetStage(target, "label_ensure", fmt.Sprintf("ensuring label %s exists", selected.Name))
+	if err := h.ensureLabelExists(ctx, client, target.Owner, target.Repo, selected); err != nil {
+		h.logPullRequestTargetFailure(target, "label_ensure", err)
 		return err
 	}
 
@@ -482,25 +488,29 @@ func (h *Handler) resolveDefaultBranch(ctx context.Context, client *githubapi.Cl
 	return branch, nil
 }
 
-func (h *Handler) loadRepositoryLabelsConfig(ctx context.Context, client *githubapi.Client, owner, repo, knownDefaultBranch string) (config.LabelsConfig, string, error) {
+func (h *Handler) loadRepositoryLabelsConfig(ctx context.Context, client *githubapi.Client, owner, repo, knownDefaultBranch string) (config.LabelsConfig, string, bool, error) {
 	defaultBranch, err := h.resolveDefaultBranch(ctx, client, owner, repo, knownDefaultBranch)
 	if err != nil {
-		return config.LabelsConfig{}, defaultBranch, err
+		return config.LabelsConfig{}, defaultBranch, false, err
 	}
 
 	labelsContent, err := client.GetRepositoryContent(ctx, owner, repo, ".github/labels.yml", defaultBranch)
 	if err != nil {
 		if err == githubapi.ErrNotFound {
-			return config.LabelsConfig{}, defaultBranch, errLabelsConfigMissing
+			labelsConfig, loadErr := config.LoadLabelsConfig("")
+			if loadErr != nil {
+				return config.LabelsConfig{}, defaultBranch, true, loadErr
+			}
+			return labelsConfig, defaultBranch, true, nil
 		}
-		return config.LabelsConfig{}, defaultBranch, err
+		return config.LabelsConfig{}, defaultBranch, false, err
 	}
 
 	labelsConfig, err := config.LoadLabelsConfig(labelsContent)
 	if err != nil {
-		return config.LabelsConfig{}, defaultBranch, fmt.Errorf("%w: %v", errLabelsConfigInvalid, err)
+		return config.LabelsConfig{}, defaultBranch, false, fmt.Errorf("%w: %v", errLabelsConfigInvalid, err)
 	}
-	return labelsConfig, defaultBranch, nil
+	return labelsConfig, defaultBranch, false, nil
 }
 
 func pullRequestTouchesLabelsConfig(files []githubapi.PullRequestFile) bool {
@@ -521,10 +531,6 @@ func (h *Handler) handlePullRequestLabelsConfigError(target pullRequestTarget, d
 }
 
 func (h *Handler) handlePullRequestConfigChangeLabelsError(event pullRequestEvent, defaultBranch string, err error) error {
-	if errors.Is(err, errLabelsConfigMissing) {
-		h.logPullRequestStage(event, "labels_config", fmt.Sprintf("skipping: .github/labels.yml is missing from default branch %s", safeBranch(defaultBranch)))
-		return nil
-	}
 	if errors.Is(err, errLabelsConfigInvalid) {
 		h.logPullRequestStage(event, "labels_config", fmt.Sprintf("skipping: invalid .github/labels.yml on default branch %s (%v)", safeBranch(defaultBranch), err))
 		return nil
@@ -534,10 +540,6 @@ func (h *Handler) handlePullRequestConfigChangeLabelsError(event pullRequestEven
 }
 
 func (h *Handler) logPullRequestLabelsConfigSkip(target pullRequestTarget, defaultBranch string, err error) bool {
-	if errors.Is(err, errLabelsConfigMissing) {
-		h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("skipping: .github/labels.yml is missing from default branch %s", safeBranch(defaultBranch)))
-		return true
-	}
 	if errors.Is(err, errLabelsConfigInvalid) {
 		h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("skipping: invalid .github/labels.yml on default branch %s (%v)", safeBranch(defaultBranch), err))
 		return true
@@ -546,15 +548,19 @@ func (h *Handler) logPullRequestLabelsConfigSkip(target pullRequestTarget, defau
 }
 
 func (h *Handler) logConnectLabelsConfigSkip(owner, repo, defaultBranch string, err error) bool {
-	if errors.Is(err, errLabelsConfigMissing) {
-		h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped labels_config_missing=true", owner, repo, safeBranch(defaultBranch))
-		return true
-	}
 	if errors.Is(err, errLabelsConfigInvalid) {
 		h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped labels_config_invalid=true error=%v", owner, repo, safeBranch(defaultBranch), err)
 		return true
 	}
 	return false
+}
+
+func (h *Handler) logLabelsConfigLoaded(target pullRequestTarget, defaultBranch string, labelCount int, usedDefaults bool) {
+	if usedDefaults {
+		h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("using built-in defaults because .github/labels.yml is missing from default branch %s", safeBranch(defaultBranch)))
+		return
+	}
+	h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("loaded %d label definition(s) from default branch %s", labelCount, defaultBranch))
 }
 
 func safeBranch(branch string) string {
@@ -581,14 +587,14 @@ func (h *Handler) removeExistingLabels(ctx context.Context, client *githubapi.Cl
 	return nil
 }
 
-func (h *Handler) verifyLabelExists(ctx context.Context, client *githubapi.Client, owner, repo, name string) error {
-	resp, err := client.GetLabel(ctx, owner, repo, name)
+func (h *Handler) ensureLabelExists(ctx context.Context, client *githubapi.Client, owner, repo string, selected labels.Definition) error {
+	resp, err := client.GetLabel(ctx, owner, repo, selected.Name)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("selected label %q does not exist in %s/%s", name, owner, repo)
+		return client.CreateLabel(ctx, owner, repo, selected.Name, selected.Color)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("get label: unexpected status %d", resp.StatusCode)

@@ -30,7 +30,7 @@ This repo includes `.github/workflows/deploy-huggingface.yml`. On pushes to `mai
 
 Set these in the GitHub repository.
 
-Repository relabel behavior is not configured through deployment env vars anymore. Each installed repository must carry its own default-branch `.github/labels.yml`, and its labels must already exist with names matching that config.
+Repository relabel behavior is not configured through deployment env vars anymore. Each installed repository can optionally carry a default-branch `.github/labels.yml` for overrides and proactive backfill, while repositories without that file still use the built-in defaults for normal pull request labeling.
 
 #### Required GitHub repository secrets
 

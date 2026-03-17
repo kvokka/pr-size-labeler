@@ -195,8 +195,9 @@ Make sure the target repositories are the ones receiving pull request events.
 
 Each target repository also needs:
 
-- a valid `.github/labels.yml` on its default branch
-- repository labels that already exist with names matching that config
+- an optional `.github/labels.yml` on its default branch if you want overrides or proactive backfill
+
+If `.github/labels.yml` is absent, normal pull request labeling still works with the built-in defaults.
 
 ## What you set now vs what you get later
 
