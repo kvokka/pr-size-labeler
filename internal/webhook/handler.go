@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,11 @@ import (
 	"pr-size-labeler/internal/labels"
 )
 
+var (
+	errLabelsConfigMissing = errors.New("labels config missing")
+	errLabelsConfigInvalid = errors.New("labels config invalid")
+)
+
 type Handler struct {
 	webhookSecret string
 	tokenProvider auth.TokenProvider
@@ -29,12 +35,6 @@ type Handler struct {
 	logger        *log.Logger
 	logPrivate    bool
 	now           func() time.Time
-	backfill      connectOpenPRsBackfillConfig
-}
-
-type connectOpenPRsBackfillConfig struct {
-	enabled  bool
-	lookback time.Duration
 }
 
 type pullRequestEvent struct {
@@ -44,16 +44,16 @@ type pullRequestEvent struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
 	Repository struct {
-		Name  string `json:"name"`
-		Owner struct {
+		Name          string `json:"name"`
+		DefaultBranch string `json:"default_branch"`
+		Owner         struct {
 			Login string `json:"login"`
 		} `json:"owner"`
 	} `json:"repository"`
 	PullRequest struct {
-		Number    int `json:"number"`
-		Additions int `json:"additions"`
-		Deletions int `json:"deletions"`
-		Labels    []struct {
+		Number int  `json:"number"`
+		Merged bool `json:"merged"`
+		Labels []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 		Base struct {
@@ -93,7 +93,7 @@ type installationEvent struct {
 	RepositoriesAdded []installationRepository `json:"repositories_added"`
 }
 
-func NewHandler(webhookSecret string, tokenProvider auth.TokenProvider, newClient func(token string) *githubapi.Client, logPrivate bool, connectOpenPRsBackfillEnabled bool, connectOpenPRsBackfillLookback time.Duration) *Handler {
+func NewHandler(webhookSecret string, tokenProvider auth.TokenProvider, newClient func(token string) *githubapi.Client, logPrivate bool) *Handler {
 	return &Handler{
 		webhookSecret: webhookSecret,
 		tokenProvider: tokenProvider,
@@ -101,10 +101,6 @@ func NewHandler(webhookSecret string, tokenProvider auth.TokenProvider, newClien
 		logger:        log.Default(),
 		logPrivate:    logPrivate,
 		now:           time.Now,
-		backfill: connectOpenPRsBackfillConfig{
-			enabled:  connectOpenPRsBackfillEnabled,
-			lookback: connectOpenPRsBackfillLookback,
-		},
 	}
 }
 
@@ -138,7 +134,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
-		if !allowedAction(event.Action) {
+		if !allowedPullRequestAction(event.Action) {
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -170,9 +166,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func allowedAction(action string) bool {
+func allowedPullRequestAction(action string) bool {
 	switch action {
-	case "opened", "reopened", "synchronize", "edited":
+	case "opened", "reopened", "synchronize", "edited", "closed":
 		return true
 	default:
 		return false
@@ -200,73 +196,130 @@ func (h *Handler) handlePullRequest(ctx context.Context, event pullRequestEvent)
 	}
 	h.logPullRequestStage(event, "token", "installation token acquired")
 	client := h.newClient(token)
-	target := pullRequestTarget{
-		Action:         event.Action,
-		InstallationID: event.Installation.ID,
-		Owner:          event.Repository.Owner.Login,
-		Repo:           event.Repository.Name,
-		Number:         event.prNumber(),
-		BaseRef:        event.PullRequest.Base.Ref,
+
+	if event.Action == "closed" {
+		return h.handleMergedLabelsConfigChange(ctx, client, event)
 	}
-	for _, label := range event.PullRequest.Labels {
-		target.Labels = append(target.Labels, pullRequestLabel{Name: label.Name})
+
+	target := event.target()
+	labelsConfig, configRef, err := h.loadRepositoryLabelsConfig(ctx, client, target.Owner, target.Repo, event.defaultBranch())
+	if err != nil {
+		return h.handlePullRequestLabelsConfigError(target, configRef, err)
 	}
-	return h.processPullRequest(ctx, client, target)
+	h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("loaded %d label definition(s) from default branch %s", len(labelsConfig.Labels), configRef))
+	return h.processPullRequest(ctx, client, target, labelsConfig.Labels)
+}
+
+func (h *Handler) handleMergedLabelsConfigChange(ctx context.Context, client *githubapi.Client, event pullRequestEvent) error {
+	owner := event.Repository.Owner.Login
+	repo := event.Repository.Name
+	defaultBranch, err := h.resolveDefaultBranch(ctx, client, owner, repo, event.defaultBranch())
+	if err != nil {
+		h.logPullRequestFailure(event, "config_change", err)
+		return err
+	}
+	if !event.PullRequest.Merged {
+		h.logPullRequestStage(event, "config_change", "skipping merged-config relabel because pull request was not merged")
+		return nil
+	}
+	if event.PullRequest.Base.Ref != defaultBranch {
+		h.logPullRequestStage(event, "config_change", fmt.Sprintf("skipping merged-config relabel because base branch %s is not the default branch %s", event.PullRequest.Base.Ref, defaultBranch))
+		return nil
+	}
+
+	h.logPullRequestStage(event, "config_change", "checking merged pull request for .github/labels.yml changes")
+	files, err := client.ListPullRequestFiles(ctx, owner, repo, event.prNumber())
+	if err != nil {
+		h.logPullRequestFailure(event, "config_change", err)
+		return err
+	}
+	if !pullRequestTouchesLabelsConfig(files) {
+		h.logPullRequestStage(event, "config_change", "merged pull request did not change .github/labels.yml")
+		return nil
+	}
+
+	labelsConfig, configRef, err := h.loadRepositoryLabelsConfig(ctx, client, owner, repo, defaultBranch)
+	if err != nil {
+		return h.handlePullRequestConfigChangeLabelsError(event, configRef, err)
+	}
+	if !labelsConfig.Backfill.Enabled {
+		h.logPullRequestStage(event, "config_change", "backfill disabled in .github/labels.yml; skipping open pull request relabel")
+		return nil
+	}
+
+	h.logPullRequestStage(event, "config_change", fmt.Sprintf("relabeling open pull requests from default branch %s lookback=%s", configRef, labelsConfig.Backfill.Lookback))
+	return h.relabelOpenPullRequests(ctx, client, event.Installation.ID, owner, repo, event.Action, labelsConfig.Labels, labelsConfig.Backfill.Lookback)
 }
 
 func (h *Handler) handleConnectEvent(ctx context.Context, eventName string, event installationEvent) error {
-	if !h.backfill.enabled {
-		h.logger.Printf("connect_open_prs_backfill enabled=false event=%q action=%q", eventName, event.Action)
-		return nil
-	}
 	token, err := h.tokenProvider.Token(ctx, event.Installation.ID)
 	if err != nil {
 		return fmt.Errorf("create installation token: %w", err)
 	}
 	client := h.newClient(token)
-	cutoff := h.now().UTC().Add(-h.backfill.lookback)
+
 	repositories := event.repositoriesForAction()
-	h.logger.Printf("connect_open_prs_backfill enabled=true event=%q action=%q repositories=%d lookback=%s cutoff=%s", eventName, event.Action, len(repositories), h.backfill.lookback, cutoff.Format(time.RFC3339))
+	h.logger.Printf("connect_relabel event=%q action=%q repositories=%d", eventName, event.Action, len(repositories))
 	for _, repository := range repositories {
 		owner, repo, err := repository.ownerAndRepo()
 		if err != nil {
 			return err
 		}
-		pullRequests, err := client.ListOpenPullRequests(ctx, owner, repo)
+		labelsConfig, configRef, err := h.loadRepositoryLabelsConfig(ctx, client, owner, repo, "")
 		if err != nil {
-			return fmt.Errorf("list open pull requests for %s/%s: %w", owner, repo, err)
+			if h.logConnectLabelsConfigSkip(owner, repo, configRef, err) {
+				continue
+			}
+			return err
 		}
-		processed := 0
-		for _, pullRequest := range pullRequests {
-			createdAt, err := time.Parse(time.RFC3339, pullRequest.CreatedAt)
-			if err != nil {
-				return fmt.Errorf("parse pull request created_at for %s/%s#%d: %w", owner, repo, pullRequest.Number, err)
-			}
-			if createdAt.UTC().Before(cutoff) {
-				break
-			}
-			target := pullRequestTarget{
-				Action:         event.Action,
-				InstallationID: event.Installation.ID,
-				Owner:          owner,
-				Repo:           repo,
-				Number:         pullRequest.Number,
-				BaseRef:        pullRequest.Base.Ref,
-			}
-			for _, label := range pullRequest.Labels {
-				target.Labels = append(target.Labels, pullRequestLabel{Name: label.Name})
-			}
-			if err := h.processPullRequest(ctx, client, target); err != nil {
-				return err
-			}
-			processed++
+		if !labelsConfig.Backfill.Enabled {
+			h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped backfill_enabled=false", owner, repo, configRef)
+			continue
 		}
-		h.logger.Printf("connect_open_prs_backfill repository=%s/%s processed=%d listed=%d", owner, repo, processed, len(pullRequests))
+		if err := h.relabelOpenPullRequests(ctx, client, event.Installation.ID, owner, repo, event.Action, labelsConfig.Labels, labelsConfig.Backfill.Lookback); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (h *Handler) processPullRequest(ctx context.Context, client *githubapi.Client, target pullRequestTarget) error {
+func (h *Handler) relabelOpenPullRequests(ctx context.Context, client *githubapi.Client, installationID int64, owner, repo, action string, labelSet labels.Set, lookback time.Duration) error {
+	cutoff := h.now().UTC().Add(-lookback)
+	pullRequests, err := client.ListOpenPullRequests(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("list open pull requests for %s/%s: %w", owner, repo, err)
+	}
+	processed := 0
+	for _, pullRequest := range pullRequests {
+		createdAt, err := time.Parse(time.RFC3339, pullRequest.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("parse pull request created_at for %s/%s#%d: %w", owner, repo, pullRequest.Number, err)
+		}
+		if createdAt.UTC().Before(cutoff) {
+			break
+		}
+
+		target := pullRequestTarget{
+			Action:         action,
+			InstallationID: installationID,
+			Owner:          owner,
+			Repo:           repo,
+			Number:         pullRequest.Number,
+			BaseRef:        pullRequest.Base.Ref,
+		}
+		for _, label := range pullRequest.Labels {
+			target.Labels = append(target.Labels, pullRequestLabel{Name: label.Name})
+		}
+		if err := h.processPullRequest(ctx, client, target, labelSet); err != nil {
+			return err
+		}
+		processed++
+	}
+	h.logger.Printf("open_pr_relabel repository=%s/%s processed=%d listed=%d lookback=%s cutoff=%s", owner, repo, processed, len(pullRequests), lookback, cutoff.Format(time.RFC3339))
+	return nil
+}
+
+func (h *Handler) processPullRequest(ctx context.Context, client *githubapi.Client, target pullRequestTarget, labelSet labels.Set) error {
 	h.logPullRequestTargetStage(target, "files", "fetching pull request files")
 	files, err := client.ListPullRequestFiles(ctx, target.Owner, target.Repo, target.Number)
 	if err != nil {
@@ -284,32 +337,22 @@ func (h *Handler) processPullRequest(ctx context.Context, client *githubapi.Clie
 	patterns := generated.ParseGitattributes(gitattributesContent)
 	h.logPullRequestTargetStage(target, "gitattributes", fmt.Sprintf("loaded %d generated-file pattern(s)", len(patterns)))
 
-	h.logPullRequestTargetStage(target, "labels_config", "loading .github/labels.yml from base branch")
-	labelsContent, err := client.GetRepositoryContent(ctx, target.Owner, target.Repo, ".github/labels.yml", target.BaseRef)
-	if err != nil && err != githubapi.ErrNotFound {
-		h.logPullRequestTargetFailure(target, "labels_config", err)
-		return err
-	}
-	labelSet, err := config.LoadLabelSet(labelsContent)
-	if err != nil {
-		h.logPullRequestTargetFailure(target, "labels_config", err)
-		return err
-	}
-	h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("loaded %d label definition(s)", len(labelSet)))
-
 	effectiveLines, effectiveSymbols := effectiveTotals(files, patterns)
 	selected := labelSet.Select(effectiveLines, effectiveSymbols)
 	h.logPullRequestTargetStage(target, "selection", fmt.Sprintf("effective_lines=%d effective_symbols=%d selected_label=%s", effectiveLines, effectiveSymbols, selected.Name))
+
+	h.logPullRequestTargetStage(target, "label_check", fmt.Sprintf("verifying label %s exists", selected.Name))
+	if err := h.verifyLabelExists(ctx, client, target.Owner, target.Repo, selected.Name); err != nil {
+		h.logPullRequestTargetFailure(target, "label_check", err)
+		return err
+	}
+
 	h.logPullRequestTargetStage(target, "labels_cleanup", "removing previously configured size labels")
 	if err := h.removeExistingLabels(ctx, client, target.Owner, target.Repo, target.Number, target.Labels, labelSet, selected.Name); err != nil {
 		h.logPullRequestTargetFailure(target, "labels_cleanup", err)
 		return err
 	}
-	h.logPullRequestTargetStage(target, "label_ensure", fmt.Sprintf("ensuring label %s exists", selected.Name))
-	if err := h.ensureLabelExists(ctx, client, target.Owner, target.Repo, selected); err != nil {
-		h.logPullRequestTargetFailure(target, "label_ensure", err)
-		return err
-	}
+
 	h.logPullRequestTargetStage(target, "label_apply", fmt.Sprintf("applying label %s", selected.Name))
 	if err := client.AddIssueLabels(ctx, target.Owner, target.Repo, target.Number, []string{selected.Name}); err != nil {
 		h.logPullRequestTargetFailure(target, "label_apply", err)
@@ -368,6 +411,28 @@ func (e pullRequestEvent) prNumber() int {
 	return e.PullRequest.Number
 }
 
+func (e pullRequestEvent) defaultBranch() string {
+	if defaultBranch := strings.TrimSpace(e.Repository.DefaultBranch); defaultBranch != "" {
+		return defaultBranch
+	}
+	return strings.TrimSpace(e.PullRequest.Base.Ref)
+}
+
+func (e pullRequestEvent) target() pullRequestTarget {
+	target := pullRequestTarget{
+		Action:         e.Action,
+		InstallationID: e.Installation.ID,
+		Owner:          e.Repository.Owner.Login,
+		Repo:           e.Repository.Name,
+		Number:         e.prNumber(),
+		BaseRef:        e.PullRequest.Base.Ref,
+	}
+	for _, label := range e.PullRequest.Labels {
+		target.Labels = append(target.Labels, pullRequestLabel{Name: label.Name})
+	}
+	return target
+}
+
 func (event installationEvent) repositoriesForAction() []installationRepository {
 	if event.Action == "added" {
 		return event.RepositoriesAdded
@@ -402,6 +467,104 @@ func (repository installationRepository) ownerAndRepo() (string, string, error) 
 	return "", "", fmt.Errorf("resolve installation repository owner/repo from payload name=%q", repository.Name)
 }
 
+func (h *Handler) resolveDefaultBranch(ctx context.Context, client *githubapi.Client, owner, repo, known string) (string, error) {
+	if branch := strings.TrimSpace(known); branch != "" {
+		return branch, nil
+	}
+	repository, err := client.GetRepository(ctx, owner, repo)
+	if err != nil {
+		return "", err
+	}
+	branch := strings.TrimSpace(repository.DefaultBranch)
+	if branch == "" {
+		return "", fmt.Errorf("repository %s/%s has empty default branch", owner, repo)
+	}
+	return branch, nil
+}
+
+func (h *Handler) loadRepositoryLabelsConfig(ctx context.Context, client *githubapi.Client, owner, repo, knownDefaultBranch string) (config.LabelsConfig, string, error) {
+	defaultBranch, err := h.resolveDefaultBranch(ctx, client, owner, repo, knownDefaultBranch)
+	if err != nil {
+		return config.LabelsConfig{}, defaultBranch, err
+	}
+
+	labelsContent, err := client.GetRepositoryContent(ctx, owner, repo, ".github/labels.yml", defaultBranch)
+	if err != nil {
+		if err == githubapi.ErrNotFound {
+			return config.LabelsConfig{}, defaultBranch, errLabelsConfigMissing
+		}
+		return config.LabelsConfig{}, defaultBranch, err
+	}
+
+	labelsConfig, err := config.LoadLabelsConfig(labelsContent)
+	if err != nil {
+		return config.LabelsConfig{}, defaultBranch, fmt.Errorf("%w: %v", errLabelsConfigInvalid, err)
+	}
+	return labelsConfig, defaultBranch, nil
+}
+
+func pullRequestTouchesLabelsConfig(files []githubapi.PullRequestFile) bool {
+	for _, file := range files {
+		if file.Filename == ".github/labels.yml" {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) handlePullRequestLabelsConfigError(target pullRequestTarget, defaultBranch string, err error) error {
+	if h.logPullRequestLabelsConfigSkip(target, defaultBranch, err) {
+		return nil
+	}
+	h.logPullRequestTargetFailure(target, "labels_config", err)
+	return err
+}
+
+func (h *Handler) handlePullRequestConfigChangeLabelsError(event pullRequestEvent, defaultBranch string, err error) error {
+	if errors.Is(err, errLabelsConfigMissing) {
+		h.logPullRequestStage(event, "labels_config", fmt.Sprintf("skipping: .github/labels.yml is missing from default branch %s", safeBranch(defaultBranch)))
+		return nil
+	}
+	if errors.Is(err, errLabelsConfigInvalid) {
+		h.logPullRequestStage(event, "labels_config", fmt.Sprintf("skipping: invalid .github/labels.yml on default branch %s (%v)", safeBranch(defaultBranch), err))
+		return nil
+	}
+	h.logPullRequestFailure(event, "labels_config", err)
+	return err
+}
+
+func (h *Handler) logPullRequestLabelsConfigSkip(target pullRequestTarget, defaultBranch string, err error) bool {
+	if errors.Is(err, errLabelsConfigMissing) {
+		h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("skipping: .github/labels.yml is missing from default branch %s", safeBranch(defaultBranch)))
+		return true
+	}
+	if errors.Is(err, errLabelsConfigInvalid) {
+		h.logPullRequestTargetStage(target, "labels_config", fmt.Sprintf("skipping: invalid .github/labels.yml on default branch %s (%v)", safeBranch(defaultBranch), err))
+		return true
+	}
+	return false
+}
+
+func (h *Handler) logConnectLabelsConfigSkip(owner, repo, defaultBranch string, err error) bool {
+	if errors.Is(err, errLabelsConfigMissing) {
+		h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped labels_config_missing=true", owner, repo, safeBranch(defaultBranch))
+		return true
+	}
+	if errors.Is(err, errLabelsConfigInvalid) {
+		h.logger.Printf("connect_relabel repository=%s/%s default_branch=%s skipped labels_config_invalid=true error=%v", owner, repo, safeBranch(defaultBranch), err)
+		return true
+	}
+	return false
+}
+
+func safeBranch(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return "unknown"
+	}
+	return branch
+}
+
 func (h *Handler) removeExistingLabels(ctx context.Context, client *githubapi.Client, owner, repo string, number int, existingLabels []pullRequestLabel, labelSet labels.Set, keep string) error {
 	knownLabels := labelSet.Names()
 	for _, existing := range existingLabels {
@@ -418,14 +581,14 @@ func (h *Handler) removeExistingLabels(ctx context.Context, client *githubapi.Cl
 	return nil
 }
 
-func (h *Handler) ensureLabelExists(ctx context.Context, client *githubapi.Client, owner, repo string, selected labels.Definition) error {
-	resp, err := client.GetLabel(ctx, owner, repo, selected.Name)
+func (h *Handler) verifyLabelExists(ctx context.Context, client *githubapi.Client, owner, repo, name string) error {
+	resp, err := client.GetLabel(ctx, owner, repo, name)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return client.CreateLabel(ctx, owner, repo, selected.Name, selected.Color)
+		return fmt.Errorf("selected label %q does not exist in %s/%s", name, owner, repo)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("get label: unexpected status %d", resp.StatusCode)

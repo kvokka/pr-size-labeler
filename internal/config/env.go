@@ -19,8 +19,6 @@ type Env struct {
 	LogPrivateDetails                     bool
 	StartupFailedDeliveryRecoveryEnabled  bool
 	StartupFailedDeliveryRecoveryLookback time.Duration
-	ConnectOpenPRsBackfillEnabled         bool
-	ConnectOpenPRsBackfillLookback        time.Duration
 }
 
 func LoadEnv() (Env, error) {
@@ -70,18 +68,6 @@ func LoadEnv() (Env, error) {
 		return Env{}, errors.New("STARTUP_FAILED_DELIVERY_RECOVERY_LOOKBACK must be greater than 0")
 	}
 
-	connectOpenPRsBackfillEnabled, err := parseBoolEnv("CONNECT_OPEN_PRS_BACKFILL_ENABLED", false)
-	if err != nil {
-		return Env{}, err
-	}
-	connectOpenPRsBackfillLookback, err := parseDurationEnv("CONNECT_OPEN_PRS_BACKFILL_LOOKBACK", 365*24*time.Hour)
-	if err != nil {
-		return Env{}, err
-	}
-	if connectOpenPRsBackfillLookback <= 0 {
-		return Env{}, errors.New("CONNECT_OPEN_PRS_BACKFILL_LOOKBACK must be greater than 0")
-	}
-
 	return Env{
 		ListenAddr:                            listenAddr,
 		WebhookSecret:                         webhookSecret,
@@ -91,8 +77,6 @@ func LoadEnv() (Env, error) {
 		LogPrivateDetails:                     logPrivateDetails,
 		StartupFailedDeliveryRecoveryEnabled:  recoveryEnabled,
 		StartupFailedDeliveryRecoveryLookback: recoveryLookback,
-		ConnectOpenPRsBackfillEnabled:         connectOpenPRsBackfillEnabled,
-		ConnectOpenPRsBackfillLookback:        connectOpenPRsBackfillLookback,
 	}, nil
 }
 
@@ -112,13 +96,6 @@ func parseDurationEnv(name string, defaultValue time.Duration) (time.Duration, e
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
 		return defaultValue, nil
-	}
-	if strings.HasSuffix(raw, "y") {
-		years, err := strconv.ParseFloat(strings.TrimSuffix(raw, "y"), 64)
-		if err != nil {
-			return 0, fmt.Errorf("parse %s: %w", name, err)
-		}
-		return time.Duration(years * float64(365*24*time.Hour)), nil
 	}
 	value, err := time.ParseDuration(raw)
 	if err != nil {

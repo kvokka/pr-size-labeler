@@ -36,25 +36,33 @@ Live [repo](https://github.com/kvokka/pr-size-labeler-test/pulls)
 
 ## What it does
 
-For each supported pull request event, `pr-size-labeler`:
+For normal pull request labeling, `pr-size-labeler`:
 
-1. reads pull request file additions/deletions and patch hunks
-2. computes effective changed lines and effective changed symbols (added/deleted diff lines only; diff metadata/context ignored)
-3. subtracts files matched by `.gitattributes` entries marked `linguist-generated=true` from both totals
-4. loads per-label `lines` thresholds and optional per-label `symbols` thresholds from `.github/labels.yml`
+1. loads `.github/labels.yml` from the repository default branch
+2. reads pull request file additions/deletions and patch hunks
+3. computes effective changed lines and effective changed symbols
+4. subtracts files matched by `.gitattributes` entries marked `linguist-generated=true`
 5. chooses the largest eligible size label when either that label's `lines` threshold or its `symbols` threshold is met
 6. removes older configured size labels
-7. creates the chosen label if needed
+7. applies exactly one configured size label
 8. optionally adds one configured comment
 
-Supported actions:
+Normal labeling runs for:
 
 - `pull_request.opened`
 - `pull_request.reopened`
 - `pull_request.synchronize`
 - `pull_request.edited`
 
-On repository connect, the app can also backfill labels for already-open pull requests inside a configured lookback window.
+Proactive relabeling runs only when `.github/labels.yml` explicitly enables it:
+
+- on repository connect (`installation.created`, `installation_repositories.added`)
+- on merged `pull_request.closed` events into the default branch when that PR changed `.github/labels.yml`
+
+Fail-closed behavior:
+
+- if `.github/labels.yml` is missing or invalid, the app makes no label changes
+- repository labels must already exist; the app no longer creates or updates repository labels
 
 ## Default labels
 
@@ -86,54 +94,75 @@ In this implementation, `.gitattributes` is read from the pull request base bran
 
 ### `.github/labels.yml`
 
-You can override label names, thresholds, colors, and optional comments.
+`labels.yml` is now the single repository-owned source of truth for both label selection and optional proactive relabeling.
+
+Top-level keys:
+
+- `backfill` (optional): proactive relabel settings; if omitted, backfill defaults to disabled
+- `backfill.enabled` (optional): controls whether install-time and merged-config relabeling run; default `false`
+- `backfill.lookback` (optional): proactive relabel age window; default `720h` (30 days)
+- `labels` (optional): override map for size keys (`XS`, `S`, `M`, `L`, `XL`, `XXL`); if omitted, the built-in label set is used unchanged
 
 Each label supports:
 
-- `lines`: the changed-line threshold for that label
-- `symbols` (optional): the changed-symbol threshold for that label
+- `name`
+- `lines`
+- `symbols` (optional)
+- `comment` (optional)
+- `color` (optional reference metadata only; the app does not create or recolor repository labels)
 
-If `symbols` is omitted, it defaults to `lines * 100`. That keeps existing `lines`-only configs working unchanged while letting you tune symbol sensitivity per label.
+If `symbols` is omitted, it defaults to `lines * 100`.
+
+You only need to include the sections and keys you want to override.
 
 Example:
 
 ```yaml
-XS:
-  name: size/XS
-  lines: 0
-  symbols: 0
-  color: 2FBF6B
-S:
-  name: size/S
-  lines: 10
-  symbols: 800
-  color: 55A84B
-  comment: |
-    This PR is still in the small range.
-M:
-  name: size/M
-  lines: 30
-  color: 7A9135
-L:
-  name: size/L
-  lines: 100
-  symbols: 10000
-  color: 9F6A27
-XL:
-  name: size/XL
-  lines: 500
-  color: C44319
-XXL:
-  name: size/XXL
-  lines: 1000
-  color: E91C0B
-  comment: |
-    This PR is very large. Consider splitting it up.
+backfill:
+  enabled: true
+  lookback: 168h
+labels:
+  XS:
+    name: size/XS
+    lines: 0
+    symbols: 0
+  S:
+    name: size/S
+    lines: 10
+    symbols: 800
+    color: 55A84B
+    comment: |
+      This PR is still in the small range.
+  M:
+    name: size/M
+    lines: 30
+  L:
+    name: size/L
+    lines: 100
+    symbols: 10000
+  XL:
+    name: size/XL
+    lines: 500
+  XXL:
+    name: size/XXL
+    lines: 1000
+    comment: |
+      This PR is very large. Consider splitting it up.
 ```
 
-Like `.gitattributes`, `labels.yml` is read from the pull request base branch.
+`labels.yml` is always read from the repository default branch.
+
+That is different from `.gitattributes`, which is still read from the pull request base branch.
 
 For selection, a label is eligible when either its `lines` threshold or its `symbols` threshold is met.
+
+If you enable backfill, `lookback` is a pull request age window. The app relabels only open pull requests whose `created_at` is inside that window.
+
+Duration format note:
+
+- use standard Go duration syntax with `h`, `m`, and `s` units
+- valid examples: `100h`, `72h30m`, `720h`
+- invalid examples: `1y`, `30d`
 
 ## Quick start
 
@@ -141,7 +170,10 @@ For selection, a label is eligible when either its `lines` threshold or its `sym
 
 Use the checked-in `app.yml` manifest or configure the app manually with:
 
-- event: `pull_request`
+- events:
+  - `pull_request`
+  - `installation`
+  - `installation_repositories`
 - permissions:
   - `pull_requests: write`
   - `metadata: read`
@@ -166,10 +198,13 @@ Copy `.env.example` and set:
 - optional `LOG_PRIVATE_DETAILS`
 - optional `STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED`
 - optional `STARTUP_FAILED_DELIVERY_RECOVERY_LOOKBACK`
-- optional `CONNECT_OPEN_PRS_BACKFILL_ENABLED`
-- optional `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK`
 
 See [`docs/github-app.md`](docs/github-app.md) for where each value comes from.
+
+Also make sure each target repository has:
+
+- a valid default-branch `.github/labels.yml`
+- repository labels that already exist with names matching the config
 
 ### Startup recovery for missed failed deliveries
 
@@ -199,34 +234,35 @@ Behavior notes:
 - repeated restarts inside the same lookback window can cause the same failed original delivery to be redelivered again
 - GitHub only allows webhook redelivery for recent deliveries, so this is a best-effort recovery tool, not a durable queue
 
-### Connect-time backfill for already-open pull requests
+### Proactive relabeling
 
-When a repository is connected to the app, `pr-size-labeler` can proactively label pull requests that are already open instead of waiting for their next `pull_request` webhook.
+When `backfill.enabled: true`, the app proactively relabels already-open pull requests:
 
-This feature is optional. If you leave it disabled, normal `pull_request` labeling still works unchanged.
-
-For this repository's default GitHub Actions → Hugging Face deployment, connect-time backfill is enabled automatically with a `1y` lookback.
-
-Environment variables:
-
-- `CONNECT_OPEN_PRS_BACKFILL_ENABLED` — set to `true` to enable connect-time backfill
-- `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK` — lookback window for already-open pull requests; accepts normal Go durations and a `y` shorthand such as `1y`; default `1y`
-
-Example:
-
-```bash
-CONNECT_OPEN_PRS_BACKFILL_ENABLED=true
-CONNECT_OPEN_PRS_BACKFILL_LOOKBACK=1y
-```
+- when repositories are connected to the app
+- when a merged PR updates `.github/labels.yml` on the default branch
 
 Behavior notes:
 
-- this runs only when repositories are connected to the app
-- it handles both initial installs and repositories added to an existing installation
-- it does not require extra repository, organization, or account permissions beyond the normal permissions already listed for this app
-- it only inspects pull requests that are still open
-- it only processes pull requests created inside the configured lookback window
-- it reuses the normal PR-labeling flow, including `.gitattributes`, `.github/labels.yml`, label cleanup, and optional comments
+- only open pull requests are relabeled
+- only pull requests created inside `backfill.lookback` are relabeled
+- direct pushes do not trigger relabeling
+- merged PR relabeling runs only when the merged PR touched exact path `.github/labels.yml`
+- normal pull request labeling does not require `backfill.enabled`
+
+How to backfill existing open pull requests:
+
+1. Make sure the repository labels already exist with the names your config uses.
+2. Add or update `.github/labels.yml` on the default branch so backfill is enabled. Minimal example:
+
+```yaml
+backfill:
+  enabled: true
+  lookback: 720h
+```
+
+3. If the app is not installed yet, merge that config first and then install the app. The installation event will relabel open pull requests inside the lookback window.
+4. If the app is already installed, merge a pull request that changes `.github/labels.yml` on the default branch with `backfill.enabled: true`. That merge event will relabel open pull requests inside the lookback window.
+5. If you only wanted a one-time backfill, merge a follow-up config change that sets `backfill.enabled: false` again after the relabel run you wanted has already happened.
 
 ### 3. Run locally
 

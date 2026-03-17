@@ -1,6 +1,8 @@
 # Reference only; GitHub App settings must still be updated manually in the GitHub UI.
 default_events:
   - pull_request
+  - installation
+  - installation_repositories
 
 default_permissions:
   pull_requests: write

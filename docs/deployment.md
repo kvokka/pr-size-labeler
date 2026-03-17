@@ -10,10 +10,11 @@ The first-time setup order matters.
 2. Use that Space name to determine the public webhook URL.
 3. Create the GitHub App with that webhook URL and the required permissions.
 4. Subscribe to the required `Pull request` event.
-5. After GitHub creates the App, collect `APP_ID` and `PRIVATE_KEY`, and keep the webhook secret you chose.
-6. Add the required GitHub Actions secrets and variables.
-7. Push your deployment change to `main`; the deploy workflow runs the shared CI action first and deploys only if that passes.
-8. Install the GitHub App on the repositories you want it to label.
+5. Subscribe to the required install events used for proactive relabeling.
+6. After GitHub creates the App, collect `APP_ID` and `PRIVATE_KEY`, and keep the webhook secret you chose.
+7. Add the required GitHub Actions secrets and variables.
+8. Push your deployment change to `main`; the deploy workflow runs the shared CI action first and deploys only if that passes.
+9. Install the GitHub App on the repositories you want it to label.
 
 For the exact GitHub App form fields to fill in, see [`docs/github-app.md`](docs/github-app.md).
 
@@ -29,6 +30,8 @@ This repo includes `.github/workflows/deploy-huggingface.yml`. On pushes to `mai
 
 Set these in the GitHub repository.
 
+Repository relabel behavior is not configured through deployment env vars anymore. Each installed repository must carry its own default-branch `.github/labels.yml`, and its labels must already exist with names matching that config.
+
 #### Required GitHub repository secrets
 
 - `HF_TOKEN`
@@ -41,8 +44,6 @@ Set these in the GitHub repository.
 - `HUGGINGFACE_SPACE`
 - `GITHUB_API_BASE_URL`
 - `LOG_PRIVATE_DETAILS`
-- `CONNECT_OPEN_PRS_BACKFILL_ENABLED`
-- `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK`
 
 #### Optional GitHub repository secrets for startup recovery behavior
 
@@ -52,24 +53,6 @@ No extra credentials are required for startup recovery beyond the existing GitHu
 - `STARTUP_FAILED_DELIVERY_RECOVERY_LOOKBACK=2h`
 
 The app uses its existing GitHub App credentials to list recent GitHub App webhook deliveries on startup and redeliver only failed deliveries within the configured lookback period.
-
-#### Optional GitHub repository variables for connect-time open PR backfill
-
-No extra credentials are required for connect-time backfill beyond the existing GitHub App secrets. If you enable backfill, configure it with these runtime environment variables:
-
-- `CONNECT_OPEN_PRS_BACKFILL_ENABLED=true`
-- `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK=1y`
-
-When enabled, the app uses the installation webhook events to scan newly connected repositories for open pull requests created inside the configured lookback window and applies the normal size-label flow immediately.
-
-No extra repository, organization, or account permissions are required for this backfill behavior beyond the normal permissions already documented for the app.
-
-For this repository's default GitHub Actions → Hugging Face deployment, the workflow currently hard-forces:
-
-- `CONNECT_OPEN_PRS_BACKFILL_ENABLED=true`
-- `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK=1y`
-
-So the repository variables above document the runtime knobs, but this repo's default workflow does not pass them through as overrides.
 
 #### `HUGGINGFACE_SPACE`
 
@@ -140,8 +123,6 @@ The workflow configures these on the target Hugging Face Space automatically thr
 - Space variable `GITHUB_API_BASE_URL`: taken from the GitHub repo variable if set, otherwise defaults to `https://api.github.com/`
 - Space variable `LOG_PRIVATE_DETAILS`: optional; leave unset or `false` for public deployments unless you explicitly want private diagnostics in logs
 - Space variable `STARTUP_FAILED_DELIVERY_RECOVERY_ENABLED`: forced to `true` in this repo's default deployment so startup recovery is active on Hugging Face without extra manual setup
-- Space variable `CONNECT_OPEN_PRS_BACKFILL_ENABLED`: forced to `true` in this repo's default deployment so newly connected repositories get proactive open-PR labeling
-- Space variable `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK`: forced to `1y` in this repo's default deployment
 
 That means this repo's default deployment does not require the separate custom Python setup that older versions needed, and it also does not require you to click into Hugging Face Space settings manually as long as the GitHub repository secrets and variables are configured correctly.
 

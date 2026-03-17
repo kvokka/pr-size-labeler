@@ -143,8 +143,14 @@ None.
 ## Events
 
 - `Pull request`
+- `Installation`
+- `Installation repositories`
 
-That covers the normal app logic for opened, reopened, synchronize, and edited pull request events.
+That covers:
+
+- normal PR labeling for opened, reopened, synchronize, and edited pull request events
+- install-time proactive relabeling when `.github/labels.yml` enables backfill
+- merged-config proactive relabeling when a merged default-branch PR changes `.github/labels.yml`
 
 Do not subscribe to `meta`. This app does not use it.
 
@@ -187,6 +193,11 @@ Install the GitHub App on the repositories where you want PR size labels to be m
 
 Make sure the target repositories are the ones receiving pull request events.
 
+Each target repository also needs:
+
+- a valid `.github/labels.yml` on its default branch
+- repository labels that already exist with names matching that config
+
 ## What you set now vs what you get later
 
 ### You set during App creation
@@ -194,7 +205,7 @@ Make sure the target repositories are the ones receiving pull request events.
 - `Webhook URL`
 - `Webhook secret`
 - repository permissions
-- required subscribed event `Pull request`
+- required subscribed events `Pull request`, `Installation`, and `Installation repositories`
 
 ### GitHub gives you after creation
 
@@ -245,34 +256,10 @@ false
 
 When left at the default, the app keeps logs redacted for public deployments by omitting request IP/header details, installation IDs, and detailed startup/startup-recovery diagnostics. Set it to `true` only when you explicitly want those extra details in logs, such as on a private self-hosted deployment.
 
-### `CONNECT_OPEN_PRS_BACKFILL_ENABLED`
-
-Optional. Default:
-
-```text
-false
-```
-
-When set to `true`, the app handles `Installation` and `Installation repositories` webhook events by scanning newly connected repositories for already-open pull requests and applying the normal size-label flow immediately.
-
-If GitHub does not deliver those install-related events, normal `pull_request` labeling still works and only connect-time backfill is skipped.
-
-This feature does not require extra repository, organization, or account permissions beyond the permissions already listed for the app.
-
-### `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK`
-
-Optional. Default:
-
-```text
-1y
-```
-
-Controls how far back connect-time open-PR backfill looks. It accepts normal Go duration strings plus a `y` shorthand such as `1y`.
-
 ## Where to set the runtime values
 
 - Local development: shell environment or your preferred `.env` loader
-- Default Hugging Face deployment for this repo: GitHub repository secrets `APP_ID`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, plus optional repository variables like `HUGGINGFACE_SPACE` and `GITHUB_API_BASE_URL`; the deploy workflow passes those through the updated `kvokka/huggingface` action into the target Hugging Face Space automatically, and it currently hard-forces `CONNECT_OPEN_PRS_BACKFILL_ENABLED=true` plus `CONNECT_OPEN_PRS_BACKFILL_LOOKBACK=1y`.
+- Default Hugging Face deployment for this repo: GitHub repository secrets `APP_ID`, `PRIVATE_KEY`, `WEBHOOK_SECRET`, plus optional repository variables like `HUGGINGFACE_SPACE` and `GITHUB_API_BASE_URL`; the deploy workflow passes those through the updated `kvokka/huggingface` action into the target Hugging Face Space automatically
 - Manual Hugging Face deployment outside the default workflow: set the same values directly in the target Hugging Face Space secrets and variables
 - Self-hosted deployment: standard process manager, container secret store, or platform secret manager
 
@@ -283,5 +270,7 @@ This repo includes `app.yml` as a transparent reference for the required event, 
 ## Notes
 
 - The app expects signed GitHub webhook deliveries via `X-Hub-Signature-256`.
-- Repository config is read from the pull request base branch.
+- `.github/labels.yml` is read from the repository default branch.
+- `.gitattributes` is read from the pull request base branch.
+- Proactive relabeling is controlled only by `.github/labels.yml`, not runtime env vars.
 - If the webhook URL changes later, update it in the GitHub App settings page.

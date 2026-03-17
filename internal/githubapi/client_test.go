@@ -69,6 +69,25 @@ func TestListOpenPullRequestsPaginates(t *testing.T) {
 	}
 }
 
+func TestGetRepositoryReturnsDefaultBranch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/repos/acme/widgets" {
+			t.Fatalf("unexpected request %s", r.URL.RequestURI())
+		}
+		writeJSON(w, map[string]any{"default_branch": "main"})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/", "test-token", server.Client())
+	repository, err := client.GetRepository(context.Background(), "acme", "widgets")
+	if err != nil {
+		t.Fatalf("GetRepository returned error: %v", err)
+	}
+	if repository.DefaultBranch != "main" {
+		t.Fatalf("default branch = %q, want main", repository.DefaultBranch)
+	}
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {

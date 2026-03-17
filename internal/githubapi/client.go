@@ -38,6 +38,10 @@ type PullRequest struct {
 	} `json:"base"`
 }
 
+type Repository struct {
+	DefaultBranch string `json:"default_branch"`
+}
+
 type IssueComment struct {
 	Body string `json:"body"`
 }
@@ -138,17 +142,12 @@ func (c *Client) GetLabel(ctx context.Context, owner, repo, name string) (*http.
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("repos/%s/%s/labels/%s", owner, repo, url.PathEscape(name)), nil)
 }
 
-func (c *Client) CreateLabel(ctx context.Context, owner, repo, name, color string) error {
-	body := map[string]string{"name": name, "color": color}
-	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("repos/%s/%s/labels", owner, repo), body)
-	if err != nil {
-		return err
+func (c *Client) GetRepository(ctx context.Context, owner, repo string) (Repository, error) {
+	var repository Repository
+	if err := c.getJSON(ctx, fmt.Sprintf("repos/%s/%s", owner, repo), &repository); err != nil {
+		return Repository{}, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("create label: unexpected status %d", resp.StatusCode)
-	}
-	return nil
+	return repository, nil
 }
 
 func (c *Client) AddIssueLabels(ctx context.Context, owner, repo string, number int, labels []string) error {
