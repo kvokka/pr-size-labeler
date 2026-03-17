@@ -237,7 +237,23 @@ That includes:
 
 ## Releases
 
-The release workflow builds platform-specific Go binaries and uploads them as GitHub Release assets. The GitHub App runtime binary should be taken from Releases rather than rebuilt manually if you want a published artifact.
+The release workflow creates a GitHub Release when you push a canonical full semver tag in the form `vMAJOR.MINOR.PATCH`, then builds platform-specific Go binaries and uploads them as Release assets. The GitHub App runtime binary should be taken from Releases rather than rebuilt manually if you want a published artifact.
+
+Users should create releases with full tags such as:
+
+- `v0.1.2`
+- `v0.1.3`
+- `v1.0.0`
+
+CI then creates or moves these shortcut tags to the same commit as that release:
+
+- `vMAJOR.MINOR`
+- `vMAJOR`
+- `MAJOR.MINOR.PATCH`
+- `MAJOR.MINOR`
+- `MAJOR`
+
+For example, pushing `v0.1.2` creates or updates `v0.1`, `v0`, `0.1.2`, `0.1`, and `0` to point at that same commit. Pushing `v0.1.3` later creates `0.1.3` and moves the shared aliases `v0.1`, `v0`, `0.1`, and `0` forward to the new release commit while the GitHub Release itself remains `v0.1.3`.
 
 ## Contributing
 

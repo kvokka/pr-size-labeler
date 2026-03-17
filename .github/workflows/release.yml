@@ -1,11 +1,65 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      major: ${{ steps.version.outputs.major }}
+      minor: ${{ steps.version.outputs.minor }}
+      patch: ${{ steps.version.outputs.patch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: version
+        name: Validate canonical release tag
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "invalid release tag '$GITHUB_REF_NAME': expected vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+
+          echo "release_tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "major=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "minor=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          echo "patch=${BASH_REMATCH[3]}" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
+
+          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+
+      - name: Create or move alias tags
+        env:
+          MAJOR: ${{ steps.version.outputs.major }}
+          MINOR: ${{ steps.version.outputs.minor }}
+          PATCH: ${{ steps.version.outputs.patch }}
+        run: |
+          full_no_v="${MAJOR}.${MINOR}.${PATCH}"
+          aliases=("v${MAJOR}.${MINOR}" "v${MAJOR}" "${full_no_v}" "${MAJOR}.${MINOR}" "${MAJOR}")
+
+          for alias in "${aliases[@]}"; do
+            git tag -f "$alias" "$GITHUB_SHA"
+            git push --force origin "refs/tags/${alias}"
+          done
+
   build:
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -36,9 +90,10 @@ jobs:
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
           ext=""
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
-          gh release upload "${{ github.event.release.tag_name }}" "dist/pr-size-labeler-${GOOS}-${GOARCH}${ext}" --clobber
+          gh release upload "$RELEASE_TAG" "dist/pr-size-labeler-${GOOS}-${GOARCH}${ext}" --clobber
