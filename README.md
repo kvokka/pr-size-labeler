@@ -18,6 +18,13 @@ This project is intentionally transparent:
 - no hidden hosted-app behavior
 - reproducible Go 1.26 binary builds attached to GitHub Releases
 
+## Why use this instead of a GitHub Action?
+
+- **Standardized behavior across repositories**: one app deployment can apply the same size-label logic everywhere instead of copying and maintaining separate workflow files per repo.
+- **No-code repository onboarding**: maintainers install the GitHub App and optionally tune `.github/labels.yml` instead of authoring and debugging Actions YAML.
+- **Instant updates**: fixes and improvements ship once in the app deployment, so you do not need to wait for every repository to update its workflow.
+- **No GitHub Actions quota usage**: labeling runs in the app service, not in GitHub-hosted runners, so it does not consume Actions minutes or compete with CI jobs.
+
 ## Example
 
 ![screenshot](assets/labels.png)
