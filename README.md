@@ -9,6 +9,8 @@
 
 `pr-size-labeler` is a fully open-source GitHub App service that applies `size/*` labels to pull requests based on effective code change size.
 
+👉 **Install via [GitHub marketplace](https://github.com/marketplace/pr-size-labeler/)**
+
 It is inspired by [`noqcks/pull-request-size`](https://github.com/noqcks/pull-request-size), but built around a transparent workflow, free use, and easy setup for both public repositories and private self-hosted setups.
 
 This project is intentionally transparent:
