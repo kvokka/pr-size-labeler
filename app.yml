@@ -1,10 +1,15 @@
+# Reference only; GitHub App settings must still be updated manually in the GitHub UI.
 default_events:
   - pull_request
 
 default_permissions:
   pull_requests: write
-  contents: read
   metadata: read
+  single_file: read
+
+single_file_paths:
+  - ".gitattributes"
+  - ".github/labels.yml"
 
 name: pr-size-labeler
 description: OSS GitHub App that applies transparent pull request size labels.

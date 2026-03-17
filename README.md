@@ -134,8 +134,13 @@ Use the checked-in `app.yml` manifest or configure the app manually with:
 - event: `pull_request`
 - permissions:
   - `pull_requests: write`
-  - `contents: read`
   - `metadata: read`
+  - `single_file: read`
+- single-file paths:
+  - `.gitattributes`
+  - `.github/labels.yml`
+
+`app.yml` is only a transparent reference. GitHub App settings are still applied and updated manually in the GitHub UI.
 
 More detail: [`docs/github-app.md`](docs/github-app.md)
 

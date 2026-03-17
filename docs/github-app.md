@@ -30,7 +30,7 @@ For example:
 
 Open `https://github.com/settings/apps/new` and fill in the fields like this.
 
-Important: the checked-in `app.yml` file is only a reference for the required permissions and event names. GitHub does not automatically apply or sync that file when you use the manual App creation page.
+Important: the checked-in `app.yml` file is only a reference for the required permissions, file paths, and event names. GitHub does not automatically apply or sync that file when you use the manual App creation page, so you must still set and update those values manually in the GitHub UI.
 
 ### Basic identification
 
@@ -120,8 +120,15 @@ Set only the permissions the current implementation needs. These must be selecte
 ### Repository permissions
 
 - Pull requests: **Read and write**
-- Contents: **Read-only**
 - Metadata: **Read-only**
+- Single file: **Read-only**
+
+### Single-file paths
+
+Allow exactly these repository files:
+
+- `.gitattributes`
+- `.github/labels.yml`
 
 No other repository permissions are required for the current app behavior.
 
@@ -271,7 +278,7 @@ Controls how far back connect-time open-PR backfill looks. It accepts normal Go 
 
 ## Optional manifest file
 
-This repo includes `app.yml` as a transparent reference for the required event and permission set, but GitHub App settings are not automatically synced from that file. If you change `app.yml`, your existing GitHub App will not update by itself.
+This repo includes `app.yml` as a transparent reference for the required event, permission, and single-file path set, but GitHub App settings are not automatically synced from that file. If you change `app.yml`, your existing GitHub App will not update by itself.
 
 ## Notes
 
