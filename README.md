@@ -26,6 +26,8 @@ This project is intentionally transparent:
 - **Standardized behavior across repositories**: one app deployment can apply the same size-label logic everywhere instead of copying and maintaining separate workflow files per repo.
 - **No-code repository onboarding**: maintainers install the GitHub App and optionally tune `.github/labels.yml` instead of authoring and debugging Actions YAML.
 - **Instant updates**: fixes and improvements ship once in the app deployment, so you do not need to wait for every repository to update its workflow.
+- **[Proactive relabeling](#proactive-relabeling)**: optionally relabel existing open pull requests on app install or after merged `.github/labels.yml` changes instead of waiting for each PR to receive a new event.
+- **[Startup recovery for missed failed deliveries](#startup-recovery-for-missed-failed-deliveries)**: optionally recover recent failed webhook deliveries after downtime or restarts so missed labeling events are less likely to stay missed.
 - **No GitHub Actions quota usage**: labeling runs in the app service, not in GitHub-hosted runners, so it does not consume Actions minutes or compete with CI jobs.
 
 ## Example
